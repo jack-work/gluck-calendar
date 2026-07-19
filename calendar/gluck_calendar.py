@@ -140,7 +140,6 @@ def bearer_to_remote_headers():
 
 
 # ── Schema ────────────────────────────────────────────────────────────────
-db.execute("CREATE SEQUENCE IF NOT EXISTS event_id_seq")
 db.execute(
     """CREATE TABLE IF NOT EXISTS event (
         id BIGINT PRIMARY KEY,
@@ -334,7 +333,9 @@ def create_event():
                 return jsonify(as_dict(event_row(eid))), 200
             return jsonify(error="uid already in use"), 409
 
-        event_id = db.execute("SELECT nextval('event_id_seq')").fetchone()[0]
+        event_id = (
+            db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM event").fetchone()[0]
+        )
         db.execute(
             """INSERT INTO event (id, uid, title, description, location,
                                    dtstart, dtend, all_day, rrule, source, created_by)
