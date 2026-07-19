@@ -291,6 +291,23 @@ def expand(row, window_from, window_to):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
+@app.get("/")
+def index():
+    return jsonify(
+        service="gluck-calendar",
+        endpoints=[
+            "GET  /health",
+            "GET  /whoami",
+            "GET  /events?from=ISO&to=ISO",
+            "POST /events",
+            "GET  /events/<id>",
+            "PUT  /events/<id>",
+            "DELETE /events/<id>",
+            "POST /events/<id>/share",
+        ],
+    )
+
+
 @app.get("/health")
 def health():
     return jsonify(status="ok")
