@@ -27,6 +27,7 @@
               pyjwt
               cryptography
               python-dateutil
+              pytz
             ]
           );
           hardened = {
