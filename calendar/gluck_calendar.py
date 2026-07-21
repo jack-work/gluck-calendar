@@ -36,7 +36,21 @@ OIDC_ISSUER = os.environ.get("GLUCK_CALENDAR_OIDC_ISSUER", "https://auth.kellihe
 OIDC_JWKS_URL = os.environ.get(
     "GLUCK_CALENDAR_OIDC_JWKS_URL", "http://127.0.0.1:9091/jwks.json"
 )
-OIDC_CLIENT_ID = os.environ.get("GLUCK_CALENDAR_OIDC_CLIENT_ID", "gluck-calendar-cli")
+# Accept tokens from either the legacy `gluck-calendar-cli` client or the
+# renamed `kcal` client during the debranding transition. Comma-separated
+# so the env var stays a simple string; parsed into a set on startup.
+OIDC_CLIENT_IDS = {
+    s.strip()
+    for s in os.environ.get(
+        "GLUCK_CALENDAR_OIDC_CLIENT_IDS", "gluck-calendar-cli,kcal"
+    ).split(",")
+    if s.strip()
+}
+# Preserved for backward-compat with any operator setting the singular env
+# var; folded into the set above so both configurations work.
+_legacy_single = os.environ.get("GLUCK_CALENDAR_OIDC_CLIENT_ID")
+if _legacy_single:
+    OIDC_CLIENT_IDS.add(_legacy_single)
 OIDC_USERINFO_URL = os.environ.get(
     "GLUCK_CALENDAR_OIDC_USERINFO_URL", "http://127.0.0.1:9091/api/oidc/userinfo"
 )
@@ -121,7 +135,7 @@ def bearer_to_remote_headers():
     except Exception as e:  # noqa: BLE001
         return jsonify(error=f"invalid bearer token: {e}"), 401
 
-    if claims.get("client_id") != OIDC_CLIENT_ID:
+    if claims.get("client_id") not in OIDC_CLIENT_IDS:
         return jsonify(error="token not issued for this client"), 401
 
     userinfo = fetch_userinfo(token, claims["sub"])
