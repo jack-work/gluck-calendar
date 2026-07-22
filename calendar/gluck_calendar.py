@@ -8,7 +8,7 @@ Mirrors the gluck-todo design:
 - If Authorization: Bearer <jwt> is present, validate against Authelia's
   JWKS and stamp Remote-User / Remote-Groups from preferred_username /
   groups claims. Same bearer-bypass shape as gluck-todo.
-- Creating events requires the ``gluck-calendar-create`` group.
+- Creating events requires the ``calendar-create`` group.
 - Per-event ACL rows govern Read/Write/Delete/Share; creator gets all four.
 
 Events store an optional RFC 5545 RRULE; `GET /events?from=&to=` expands
@@ -55,7 +55,7 @@ OIDC_USERINFO_URL = os.environ.get(
     "GLUCK_CALENDAR_OIDC_USERINFO_URL", "http://127.0.0.1:9091/api/oidc/userinfo"
 )
 
-CREATE_GROUP = "gluck-calendar-create"
+CREATE_GROUP = "calendar-create"
 PERMISSIONS = ("Read", "Write", "Delete", "Share")
 DEFAULT_WINDOW_DAYS = 90
 MAX_EXPANSION = 500  # cap RRULE expansion per event per query

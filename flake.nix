@@ -51,7 +51,7 @@
                 GLUCK_CALENDAR_DB = "/var/lib/gluck-calendar/calendar.duckdb";
               };
               requireAuth = true;
-              requiredGroups = [ "gluck-calendar-create" ];
+              requiredGroups = [ "calendar-create" ];
             }
           );
         };

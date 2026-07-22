@@ -35,7 +35,7 @@ GET    /health
 ```
 
 Items you cannot Read return **404** (no existence leak). Creating an
-event requires the `gluck-calendar-create` group.
+event requires the `calendar-create` group.
 
 ## Deployment
 
