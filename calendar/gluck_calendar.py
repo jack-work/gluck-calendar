@@ -16,6 +16,7 @@ recurring events into concrete instances inside the requested window.
 """
 
 import calendar as _calendar
+import json
 import os
 import threading
 import time
@@ -53,6 +54,23 @@ if _legacy_single:
     OIDC_CLIENT_IDS.add(_legacy_single)
 OIDC_USERINFO_URL = os.environ.get(
     "GLUCK_CALENDAR_OIDC_USERINFO_URL", "http://127.0.0.1:9091/api/oidc/userinfo"
+)
+
+# Machine callers, as {client_id: username-to-read-as}.
+#
+# A client_credentials token has no user at all: no preferred_username, no
+# groups, and /userinfo has nothing to say about it. So a service cannot be
+# resolved to an identity the way a person is — it must be granted one
+# explicitly, here, and the grant is deliberately narrow:
+#
+#   * READ ONLY. Any method other than GET/HEAD is refused, so a notifier
+#     that reads the day's events can never alter them. This is enforced
+#     below, before routing, rather than trusted to each handler.
+#   * DELEGATED, NOT IMPERSONATING. The service reads the named user's
+#     events through the ordinary ACL path; it gains nothing that user
+#     lacks, and the audit line records which client asked.
+SERVICE_CLIENTS = json.loads(
+    os.environ.get("GLUCK_CALENDAR_SERVICE_CLIENTS", "{}")
 )
 
 CREATE_GROUP = "calendar-create"
@@ -135,7 +153,22 @@ def bearer_to_remote_headers():
     except Exception as e:  # noqa: BLE001
         return jsonify(error=f"invalid bearer token: {e}"), 401
 
-    if claims.get("client_id") not in OIDC_CLIENT_IDS:
+    client_id = claims.get("client_id")
+
+    # Machine callers take the delegated, read-only path.
+    if client_id in SERVICE_CLIENTS:
+        if request.method not in ("GET", "HEAD"):
+            app.logger.info(
+                "refused %s %s: service client %s is read-only",
+                request.method, request.path, client_id,
+            )
+            return jsonify(error="service clients are read-only"), 403
+        request.environ["HTTP_REMOTE_USER"] = SERVICE_CLIENTS[client_id]
+        request.environ["HTTP_REMOTE_GROUPS"] = ""
+        request.environ["gluck.client_id"] = client_id
+        return None
+
+    if client_id not in OIDC_CLIENT_IDS:
         return jsonify(error="token not issued for this client"), 401
 
     userinfo = fetch_userinfo(token, claims["sub"])
