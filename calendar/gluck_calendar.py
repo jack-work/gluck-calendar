@@ -15,23 +15,25 @@ Events store an optional RFC 5545 RRULE; `GET /events?from=&to=` expands
 recurring events into concrete instances inside the requested window.
 """
 
-import calendar as _calendar
 import json
 import os
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import duckdb
 import jwt
+import monthview
 import requests
 from dateutil.rrule import rrulestr
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, jsonify, redirect, render_template, request
 from jwt import PyJWKClient
 
 DB_PATH = os.environ.get("GLUCK_CALENDAR_DB", "/var/lib/gluck-calendar/calendar.duckdb")
 PORT = int(os.environ.get("PORT", "9094"))
+DISPLAY_TZ = ZoneInfo(os.environ.get("GLUCK_CALENDAR_TZ", "America/New_York"))
 
 OIDC_ISSUER = os.environ.get("GLUCK_CALENDAR_OIDC_ISSUER", "https://auth.kelliher.info")
 OIDC_JWKS_URL = os.environ.get(
@@ -81,6 +83,18 @@ MAX_EXPANSION = 500  # cap RRULE expansion per event per query
 app = Flask(__name__)
 db_lock = threading.Lock()
 db = duckdb.connect(DB_PATH)
+
+TEMPLATE = os.path.join(app.root_path, app.template_folder, "month.html")
+with open(TEMPLATE, encoding="utf-8") as fh:
+    _built = fh.read()
+for _marker in ("<!-- zanni:boil begin", "<!-- zanni:gesso begin",
+                "<!-- zanni:phosphor begin", "<!-- zanni:fontpack begin"):
+    if _marker not in _built:
+        raise SystemExit(
+            f"{TEMPLATE} was not built: {_marker!r} missing. "
+            "Run bin/build-ui or build the flake package; see docs/ui.md."
+        )
+del _built
 
 _userinfo_cache: dict = {}
 _userinfo_cache_lock = threading.Lock()
@@ -155,7 +169,6 @@ def bearer_to_remote_headers():
 
     client_id = claims.get("client_id")
 
-    # Machine callers take the delegated, read-only path.
     if client_id in SERVICE_CLIENTS:
         if request.method not in ("GET", "HEAD"):
             app.logger.info(
@@ -365,209 +378,26 @@ def api_index():
 
 
 # ── HTML calendar view ────────────────────────────────────────────────────
-CALENDAR_TEMPLATE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ month_name }} {{ year }} · gluck-calendar</title>
-<style>
-  :root {
-    --bg: #fafaf9;
-    --fg: #111;
-    --muted: #999;
-    --line: #e5e5e2;
-    --accent: #b45309;
-    --today: #fef3c7;
-    --event: #1c1917;
-    --event-bg: #f5f5f4;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0c0a09;
-      --fg: #f5f5f4;
-      --muted: #78716c;
-      --line: #292524;
-      --accent: #fbbf24;
-      --today: #422006;
-      --event: #fafaf9;
-      --event-bg: #1c1917;
-    }
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  header { display: flex; align-items: baseline; justify-content: space-between; padding: 2.5rem 3rem 1.5rem; max-width: 1200px; margin: 0 auto; }
-  h1 { font-size: 2rem; font-weight: 500; letter-spacing: -0.02em; margin: 0; }
-  h1 .year { color: var(--muted); margin-left: 0.5rem; font-weight: 400; }
-  nav { display: flex; gap: 0.75rem; align-items: center; }
-  nav a, nav button { color: var(--muted); text-decoration: none; font-size: 0.9rem; padding: 0.35rem 0.75rem; border: 1px solid var(--line); background: transparent; border-radius: 4px; cursor: pointer; font: inherit; }
-  nav a:hover, nav button:hover { color: var(--fg); border-color: var(--muted); }
-  nav a.today-btn { color: var(--accent); border-color: var(--accent); }
-  main { max-width: 1200px; margin: 0 auto; padding: 0 3rem 3rem; }
-  .grid { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
-  .grid .weekday { padding: 0.5rem 0.75rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: transparent; }
-  .day { min-height: 110px; padding: 0.5rem 0.6rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: pointer; position: relative; }
-  .day:hover { background: var(--event-bg); }
-  .day.other-month { color: var(--muted); background: transparent; }
-  .day.other-month .day-num { opacity: 0.4; }
-  .day.today { background: var(--today); }
-  .day-num { font-size: 0.85rem; font-variant-numeric: tabular-nums; margin-bottom: 0.25rem; }
-  .day.today .day-num { color: var(--accent); font-weight: 600; }
-  .event { display: block; font-size: 0.75rem; padding: 0.15rem 0.35rem; margin: 0.15rem 0; background: var(--event-bg); color: var(--event); border-left: 2px solid var(--accent); border-radius: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .event.instance { cursor: pointer; }
-  .event .time { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 0.35rem; }
-  footer { text-align: center; color: var(--muted); font-size: 0.75rem; padding: 1.5rem; }
-  /* Modal */
-  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 10; }
-  .modal-bg.open { display: flex; }
-  .modal { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 1.5rem; width: min(440px, 92vw); max-height: 88vh; overflow: auto; }
-  .modal h2 { margin: 0 0 1rem; font-size: 1.15rem; font-weight: 500; letter-spacing: -0.01em; }
-  .modal label { display: block; font-size: 0.75rem; color: var(--muted); margin: 0.75rem 0 0.25rem; text-transform: uppercase; letter-spacing: 0.06em; }
-  .modal input, .modal textarea { width: 100%; padding: 0.5rem; border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 4px; font: inherit; }
-  .modal textarea { min-height: 4rem; resize: vertical; }
-  .modal .actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
-  .modal button { padding: 0.45rem 0.9rem; border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 4px; cursor: pointer; font: inherit; }
-  .modal button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .modal button.danger { color: #dc2626; border-color: #dc2626; }
-  .modal .meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.5rem; word-break: break-all; }
-  @media (max-width: 640px) {
-    header { padding: 1.25rem 1rem 1rem; flex-direction: column; align-items: stretch; gap: 0.75rem; }
-    main { padding: 0 0.5rem 2rem; }
-    .day { min-height: 72px; padding: 0.35rem; }
-    .event { font-size: 0.68rem; }
-  }
-</style>
-</head>
-<body>
-<header>
-  <h1>{{ month_name }}<span class="year">{{ year }}</span></h1>
-  <nav>
-    <a href="/calendar/{{ prev_year }}/{{ '%02d' % prev_month }}" title="Previous month">←</a>
-    <a class="today-btn" href="/calendar">Today</a>
-    <a href="/calendar/{{ next_year }}/{{ '%02d' % next_month }}" title="Next month">→</a>
-  </nav>
-</header>
-<main>
-  <div class="grid">
-    <div class="weekday">Sun</div><div class="weekday">Mon</div><div class="weekday">Tue</div><div class="weekday">Wed</div><div class="weekday">Thu</div><div class="weekday">Fri</div><div class="weekday">Sat</div>
-    {% for day in days %}
-      <div class="day{% if not day.in_month %} other-month{% endif %}{% if day.is_today %} today{% endif %}"
-           data-date="{{ day.iso }}" onclick="openCreate('{{ day.iso }}')">
-        <div class="day-num">{{ day.day }}</div>
-        {% for e in day.events %}
-          <span class="event instance" data-id="{{ e.id }}" onclick="event.stopPropagation(); openView({{ e.id }})">
-            {% if not e.all_day %}<span class="time">{{ e.time }}</span>{% endif %}{{ e.title }}
-          </span>
-        {% endfor %}
-      </div>
-    {% endfor %}
-  </div>
-</main>
-<footer>{{ event_count }} event{{ 's' if event_count != 1 else '' }} in view · <a href="/api" style="color:inherit">api</a></footer>
-
-<div class="modal-bg" id="modal" onclick="if(event.target.id=='modal') closeModal()">
-  <div class="modal">
-    <h2 id="modal-title">Event</h2>
-    <div id="modal-body"></div>
-  </div>
-</div>
-
-<script>
-const PERMS = ['Read','Write','Delete','Share'];
-function el(t, a={}, ...c) { const n = document.createElement(t); for (const [k,v] of Object.entries(a)) { if (k==='onclick') n.onclick=v; else n.setAttribute(k,v); } for (const x of c) n.append(x); return n; }
-function closeModal(){ document.getElementById('modal').classList.remove('open'); }
-function openCreate(iso){
-  const m = document.getElementById('modal');
-  document.getElementById('modal-title').textContent = 'New event';
-  const body = document.getElementById('modal-body');
-  body.innerHTML = '';
-  body.append(
-    el('label',{for:'e-title'},'Title'),         el('input',{id:'e-title',type:'text',placeholder:'What?'}),
-    el('label',{for:'e-dtstart'},'Start'),      el('input',{id:'e-dtstart',type:'datetime-local',value:iso+'T09:00'}),
-    el('label',{for:'e-dtend'},'End (optional)'), el('input',{id:'e-dtend',type:'datetime-local'}),
-    el('label',{for:'e-location'},'Location'),   el('input',{id:'e-location',type:'text'}),
-    el('label',{for:'e-desc'},'Description'),    el('textarea',{id:'e-desc'}),
-  );
-  const actions = el('div',{class:'actions'},
-    el('button',{onclick:closeModal},'Cancel'),
-    el('button',{class:'primary',onclick:submitCreate},'Create'),
-  );
-  body.append(actions);
-  m.classList.add('open');
-  setTimeout(()=>document.getElementById('e-title').focus(), 50);
-}
-async function submitCreate(){
-  const b = {
-    title: document.getElementById('e-title').value.trim(),
-    dtstart: document.getElementById('e-dtstart').value ? document.getElementById('e-dtstart').value+':00' : null,
-    dtend: document.getElementById('e-dtend').value ? document.getElementById('e-dtend').value+':00' : null,
-    location: document.getElementById('e-location').value || null,
-    description: document.getElementById('e-desc').value || null,
-  };
-  if (!b.title || !b.dtstart) { alert('Title and start are required'); return; }
-  const r = await fetch('/events', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b)});
-  if (!r.ok) { alert('Create failed: '+r.status+' '+await r.text()); return; }
-  location.reload();
-}
-async function openView(id){
-  const r = await fetch('/events/'+id);
-  if (!r.ok) { alert('Load failed: '+r.status); return; }
-  const e = await r.json();
-  document.getElementById('modal-title').textContent = e.title;
-  const body = document.getElementById('modal-body');
-  body.innerHTML = '';
-  const when = e.all_day ? `${e.dtstart.slice(0,10)} (all day)` : `${e.dtstart} → ${e.dtend || '—'}`;
-  body.append(
-    el('div',{class:'meta'}, when),
-  );
-  if (e.location) body.append(el('div',{class:'meta'}, '📍 '+e.location));
-  if (e.description) body.append(el('div',{class:'meta',style:'white-space:pre-wrap'}, e.description));
-  if (e.rrule) body.append(el('div',{class:'meta'}, 'RRULE: '+e.rrule));
-  if (e.source) body.append(el('div',{class:'meta'}, 'source: '+e.source));
-  body.append(el('div',{class:'meta'}, 'id '+e.id+' · created by '+e.created_by));
-  const actions = el('div',{class:'actions'},
-    el('button',{class:'danger',onclick:()=>del(id)},'Delete'),
-    el('button',{onclick:closeModal},'Close'),
-  );
-  body.append(actions);
-  document.getElementById('modal').classList.add('open');
-}
-async function del(id){
-  if (!confirm('Delete this event?')) return;
-  const r = await fetch('/events/'+id, {method:'DELETE'});
-  if (!r.ok) { alert('Delete failed: '+r.status); return; }
-  location.reload();
-}
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-</script>
-</body>
-</html>
-"""
+WEEKDAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+MONTH_ABBR = tuple(name[:3] for name in MONTH_NAMES)
+MIN_SLOT_PCT = 1.2
 
 
-@app.get("/calendar")
-def calendar_today():
-    now = datetime.now(timezone.utc)
-    return redirect(f"/calendar/{now.year}/{now.month:02d}")
+def local(moment):
+    return moment.astimezone(DISPLAY_TZ)
 
 
-@app.get("/calendar/<int:year>/<int:month>")
-def calendar_month(year, month):
-    if not caller():
-        return jsonify(error="unauthenticated"), 401
-    if month < 1 or month > 12 or year < 1970 or year > 3000:
-        return jsonify(error="invalid month/year"), 400
+def day_bounds(first_day, last_day):
+    lo = datetime.combine(first_day, datetime.min.time(), DISPLAY_TZ)
+    hi = datetime.combine(last_day + timedelta(days=1), datetime.min.time(), DISPLAY_TZ)
+    return lo, hi
 
-    # Compute the visible window: leading days from prev month + this month + trailing days
-    # Sunday-first grid.
-    first = datetime(year, month, 1, tzinfo=timezone.utc)
-    # Sunday=6 in weekday(); we want the previous Sunday as the grid start.
-    lead = (first.weekday() + 1) % 7
-    grid_start = first - timedelta(days=lead)
-    grid_end = grid_start + timedelta(days=42)  # always render 6 rows
 
-    # Pull events in that window
-    user = caller()
+def read_instances(user, window_from, window_to):
     with db_lock:
         rows = db.execute(
             """SELECT e.id, e.uid, e.title, e.description, e.location, e.dtstart,
@@ -578,55 +408,211 @@ def calendar_month(year, month):
                ORDER BY e.dtstart""",
             [user],
         ).fetchall()
-
-    # Bucket instances by local date (using event's own tz — the dtstart column
-    # is TIMESTAMPTZ; render in its stored offset).
-    buckets: dict = {}
-    total = 0
+    out = []
     for row in rows:
-        for inst in expand(row, grid_start, grid_end):
-            dt = datetime.fromisoformat(inst["dtstart"])
-            key = dt.date().isoformat()
-            buckets.setdefault(key, []).append(
+        for inst in expand(row, window_from, window_to):
+            out.append(
                 {
                     "id": inst["id"],
                     "title": inst["title"],
                     "all_day": inst["all_day"],
-                    "time": dt.strftime("%H:%M"),
+                    "recurring": inst["recurring"],
+                    "start": datetime.fromisoformat(inst["dtstart"]),
+                    "end": datetime.fromisoformat(inst["dtend"]) if inst["dtend"] else None,
                 }
             )
-            total += 1
+    return out
 
-    today = datetime.now(timezone.utc).date()
-    days = []
-    for i in range(42):
-        d = (grid_start + timedelta(days=i)).date()
-        days.append(
+
+def span_label(first_day, last_day):
+    if first_day == last_day:
+        return f"{MONTH_ABBR[first_day.month - 1]} {first_day.day}"
+    return (
+        f"{MONTH_ABBR[first_day.month - 1]} {first_day.day} \u2013 "
+        f"{MONTH_ABBR[last_day.month - 1]} {last_day.day}"
+    )
+
+
+def build_docket(day, bands, timed, today, now):
+    """The right-hand day column. See docs/ui.md § Layout."""
+    view = {
+        "iso": day.isoformat(),
+        "day": day.day,
+        "dow": WEEKDAY_LABELS[(day.weekday() + 1) % 7],
+        "month_abbr": MONTH_ABBR[day.month - 1],
+        "allday": [
             {
-                "iso": d.isoformat(),
-                "day": d.day,
-                "in_month": d.month == month,
-                "is_today": d == today,
-                "events": sorted(buckets.get(d.isoformat(), []), key=lambda e: (not e["all_day"], e["time"])),
+                "id": inst["id"],
+                "title": inst["title"],
+                "range_label": span_label(first, last) if first != last else "",
+            }
+            for first, last, inst in bands
+        ],
+        "slots": [],
+        "hour_marks": [],
+        "hours": 0,
+        "lo": 0,
+        "now_pct": None,
+        "now_label": "",
+    }
+    if not timed:
+        return view
+
+    lo, hi = monthview.docket_window(timed, now if day == today else None)
+    span = hi - lo
+    view["lo"], view["hours"] = lo, span
+
+    for ev in monthview.stack(timed):
+        top = monthview.fraction(ev["start"], day, lo, hi) * 100
+        bottom = monthview.fraction(ev["end"], day, lo, hi) * 100
+        height = max(MIN_SLOT_PCT, bottom - top)
+        view["slots"].append(
+            {
+                "id": ev["id"],
+                "title": ev["title"],
+                "at": ev["start"].strftime("%H:%M"),
+                "top": round(top, 3),
+                "height": round(min(height, 100 - top), 3),
+                "left": round(ev["left"] * 100, 3),
+                "width": round(ev["width"] * 100 - 1.5, 3),
+                "short": height < 4.5,
             }
         )
+
+    view["hour_marks"] = [
+        {"label": f"{hour:02d}", "pct": round((hour - lo) / span * 100, 3)}
+        for hour in range(lo, hi)
+    ]
+
+    if day == today:
+        pct = monthview.fraction(now, day, lo, hi) * 100
+        if 0 <= pct <= 100:
+            view["now_pct"] = round(pct, 3)
+            view["now_label"] = now.strftime("%H:%M")
+    return view
+
+
+@app.get("/calendar")
+def calendar_today():
+    today = datetime.now(DISPLAY_TZ).date()
+    return redirect(f"/calendar/{today.year}/{today.month:02d}")
+
+
+@app.get("/calendar/<int:year>/<int:month>")
+def calendar_month(year, month):
+    user = caller()
+    if not user:
+        return jsonify(error="unauthenticated"), 401
+    if month < 1 or month > 12 or year < 1970 or year > 3000:
+        return jsonify(error="invalid month/year"), 400
+
+    now = datetime.now(DISPLAY_TZ)
+    today = now.date()
+    grid = monthview.month_grid(year, month, DISPLAY_TZ, today)
+    grid_start, grid_end = grid[0][0], grid[-1][-1]
+    window_from, window_to = day_bounds(grid_start, grid_end)
+
+    instances = read_instances(user, window_from, window_to)
+
+    bands, by_day = [], {}
+    for inst in instances:
+        kind, value = monthview.classify(inst, DISPLAY_TZ)
+        if kind == "band":
+            bands.append((value[0], value[1], inst))
+        else:
+            start, end = value
+            by_day.setdefault(start.date(), []).append(dict(inst, start=start, end=end))
+
+    requested = request.args.get("day", "")
+    try:
+        selected_day = date.fromisoformat(requested)
+    except ValueError:
+        selected_day = None
+    if selected_day is None or not (grid_start <= selected_day <= grid_end):
+        selected_day = today if grid_start <= today <= grid_end else date(year, month, 1)
+
+    weeks = []
+    for row in grid:
+        segments = [(first, last, inst) for first, last, inst in bands]
+        placed, lanes, hidden = monthview.week_bands(segments, row[0])
+        week = {
+            "lanes": lanes,
+            "bands_hidden": hidden,
+            "bands": [
+                {
+                    "id": seg["payload"]["id"],
+                    "title": seg["payload"]["title"],
+                    "col": seg["col"],
+                    "span": seg["span"],
+                    "lane": seg["lane"],
+                    "continues_before": seg["continues_before"],
+                    "continues_after": seg["continues_after"],
+                    "range_label": seg["payload"]["title"],
+                }
+                for seg in placed
+            ],
+            "days": [],
+        }
+        cap = monthview.CHIP_CAP_PLAIN if lanes <= 1 else monthview.CHIP_CAP_BANDED
+        for day in row:
+            timed = sorted(by_day.get(day, []), key=lambda e: e["start"])
+            banded = sum(1 for first, last, _ in bands if first <= day <= last)
+            shown, overflow = timed, 0
+            if len(timed) > cap:
+                shown, overflow = timed[: cap - 1], len(timed) - (cap - 1)
+            week["days"].append(
+                {
+                    "iso": day.isoformat(),
+                    "url": f"/calendar/{day.year}/{day.month:02d}?day={day.isoformat()}",
+                    "day": day.day,
+                    "month_abbr": MONTH_ABBR[day.month - 1],
+                    "long_label": f"{WEEKDAY_LABELS[(day.weekday() + 1) % 7]} "
+                                  f"{MONTH_NAMES[day.month - 1]} {day.day}",
+                    "in_month": day.month == month and day.year == year,
+                    "is_today": day == today,
+                    "is_past": day < today,
+                    "is_selected": day == selected_day,
+                    "count": len(timed) + banded,
+                    "overflow": overflow,
+                    "chips": [
+                        {
+                            "id": ev["id"],
+                            "title": ev["title"],
+                            "at": ev["start"].strftime("%H:%M"),
+                            "recurring": ev["recurring"],
+                        }
+                        for ev in shown
+                    ],
+                }
+            )
+        weeks.append(week)
+
+    docket = build_docket(
+        selected_day,
+        [(first, last, inst) for first, last, inst in bands if first <= selected_day <= last],
+        by_day.get(selected_day, []),
+        today,
+        now,
+    )
 
     prev_month = 12 if month == 1 else month - 1
     prev_year = year - 1 if month == 1 else year
     next_month = 1 if month == 12 else month + 1
     next_year = year + 1 if month == 12 else year
 
-    return render_template_string(
-        CALENDAR_TEMPLATE,
+    return render_template(
+        "month.html",
         year=year,
         month=month,
-        month_name=_calendar.month_name[month],
-        days=days,
-        event_count=total,
-        prev_year=prev_year,
-        prev_month=prev_month,
-        next_year=next_year,
-        next_month=next_month,
+        month_name=MONTH_NAMES[month - 1],
+        weekday_labels=WEEKDAY_LABELS,
+        weeks=weeks,
+        selected=docket,
+        event_count=len(instances),
+        may_create=CREATE_GROUP in caller_groups(),
+        tz_label=now.strftime("%Z"),
+        prev_url=f"/calendar/{prev_year}/{prev_month:02d}",
+        next_url=f"/calendar/{next_year}/{next_month:02d}",
     )
 
 

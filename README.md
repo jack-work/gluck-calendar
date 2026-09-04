@@ -8,6 +8,20 @@ to loopback, Caddy sets `Remote-User`/`Remote-Groups` from Authelia, and
 `Authorization: Bearer <jwt>` is accepted for CLI/agent clients (validated
 against Authelia's JWKS).
 
+## Web view
+
+A month grid with a day docket, at `/calendar/<year>/<month>?day=<iso>`.
+Multi-day events span the days they occupy, concurrent events get side-by-side
+lanes, and the whole page is keyboard-navigable.
+
+The interface is a Jinja template built at Nix time: `zanni` components are
+inlined into it and two checkers run over the result, so an effect cannot
+vanish silently. Build it locally with `bin/build-ui`.
+
+**Read [docs/ui.md](docs/ui.md) before changing anything visual.** It carries
+the filter-placement budget, the palette convention and the layout rules, all
+of which are enforced by `bin/cal-check` in the build.
+
 ## Data model
 
 DuckDB, single-writer, per-item ACL.
@@ -44,6 +58,10 @@ inputs.gluck-calendar.url = "github:jack-work/gluck-calendar";
 
 imports = [ inputs.gluck-calendar.nixosModules.default ];
 services.gluck-calendar.enable = true;
+services.gluck-calendar.timeZone = "America/New_York";
 ```
+
+`timeZone` decides which civil day an instance lands on in the web view. The
+API is unaffected; it stores and returns `TIMESTAMPTZ`.
 
 Registers `cal.kelliher.info` (`requireAuth = true`) into the platform.

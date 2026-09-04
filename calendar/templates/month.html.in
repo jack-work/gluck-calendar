@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{ month_name }} {{ year }} · calendar</title>
+<style>
+  :root {
+    --cal-ground: var(--paper);
+    --cal-ground-2: var(--paper-2);
+    --cal-ink: var(--ink);
+    --cal-muted: var(--muted);
+    --cal-rule: var(--rule);
+    --cal-rule-firm: rgba(43, 26, 21, 0.38);
+    --cal-focus: var(--gold);
+    --cal-focus-bright: var(--gold-bright);
+    --cal-alarm: var(--oxblood);
+    --cal-chip: rgba(43, 26, 21, 0.07);
+    --cal-chip-hover: rgba(43, 26, 21, 0.14);
+    --cal-outside: 0.42;
+    --cal-past: 0.62;
+
+    --cell-pad: 0.4rem;
+    --num-h: 1.6rem;
+    --lane-h: 1.2rem;
+    --hour-h: 2.4rem;
+    --gutter: 2.6rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    html:root {
+      --cal-ground: var(--stage);
+      --cal-ground-2: var(--stage-2);
+      --cal-ink: var(--stage-ink);
+      --cal-muted: var(--stage-muted);
+      --cal-rule: rgba(240, 223, 200, 0.16);
+      --cal-rule-firm: rgba(240, 223, 200, 0.34);
+      --cal-chip: rgba(240, 223, 200, 0.09);
+      --cal-chip-hover: rgba(240, 223, 200, 0.17);
+      --cal-alarm: #c25b52;
+      --cal-outside: 0.34;
+      --cal-past: 0.58;
+    }
+    html:root body {
+      background-color: var(--stage);
+      background-image: repeating-conic-gradient(var(--stage-2) 0% 25%, transparent 0% 50%);
+      color: var(--stage-ink);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--fontpack-mono);
+    font-size: 16px;
+    line-height: 1.4;
+    color: var(--cal-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--cal-focus);
+    outline-offset: 2px;
+  }
+
+  /* ── masthead ─────────────────────────────────────────────────────── */
+
+  .page {
+    max-width: 1560px;
+    margin: 0 auto;
+    padding: 2rem clamp(0.75rem, 3vw, 3rem) 1rem;
+  }
+
+  .masthead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--cal-rule-firm);
+  }
+
+  .title { display: flex; align-items: baseline; gap: 0.9rem; }
+
+  .title h1 {
+    font-family: var(--fontpack-display);
+    font-weight: 400;
+    font-size: clamp(2.6rem, 6vw, 4.2rem);
+    line-height: 1;
+    letter-spacing: 0.06em;
+    margin: 0;
+    padding: 4px;
+  }
+
+  .title .year {
+    font-size: 1.1rem;
+    letter-spacing: 0.22em;
+    color: var(--cal-muted);
+  }
+
+  .helm { display: flex; align-items: center; gap: 0.4rem; }
+
+  .helm a, .helm button {
+    font: inherit;
+    font-size: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cal-muted);
+    text-decoration: none;
+    background: transparent;
+    border: 1px solid var(--cal-rule);
+    padding: 0.25rem 0.7rem;
+    cursor: pointer;
+  }
+
+  .helm a:hover, .helm button:hover {
+    color: var(--cal-ink);
+    border-color: var(--cal-rule-firm);
+    background: var(--cal-chip);
+  }
+
+  .helm .step { padding: 0.25rem 0.6rem; }
+
+  .helm .now { color: var(--cal-focus); border-color: var(--cal-focus); }
+
+  .helm .make { color: var(--cal-ink); border-color: var(--cal-rule-firm); }
+
+  /* ── the two panes ────────────────────────────────────────────────── */
+
+  .frame {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22rem;
+    gap: clamp(1rem, 2vw, 2rem);
+    align-items: start;
+    padding-top: 1.25rem;
+  }
+
+  @media (max-width: 1080px) {
+    .frame { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* ── month grid ───────────────────────────────────────────────────── */
+
+  .weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    padding-bottom: 0.4rem;
+  }
+
+  .weekdays span {
+    font-size: 0.95rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--cal-muted);
+    padding-left: calc(var(--cell-pad) + 1px);
+  }
+
+  .weeks {
+    border-top: 1px solid var(--cal-rule-firm);
+    border-left: 1px solid var(--cal-rule);
+  }
+
+  .week {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .cell {
+    position: relative;
+    min-height: 7.5rem;
+    padding: var(--cell-pad);
+    border-right: 1px solid var(--cal-rule);
+    border-bottom: 1px solid var(--cal-rule);
+    cursor: pointer;
+    overflow: hidden;
+  }
+
+  .cell:hover { background: var(--cal-chip); }
+
+  .cell.outside { opacity: var(--cal-outside); }
+
+  .cell.past .chips { opacity: var(--cal-past); }
+
+  .cell.selected {
+    box-shadow: inset 0 0 0 1px var(--cal-rule-firm), inset 0 0 0 5px var(--cal-ground-2);
+    background: var(--cal-chip);
+  }
+
+  .cell.today.selected {
+    box-shadow: inset 0 3px 0 -1px var(--cal-focus), inset 0 0 0 5px var(--cal-ground-2);
+  }
+
+  .num {
+    display: block;
+    height: var(--num-h);
+    font-size: 1.15rem;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    color: var(--cal-muted);
+  }
+
+  .cell.in-month .num { color: var(--cal-ink); }
+
+  .cell.today {
+    box-shadow: inset 0 3px 0 -1px var(--cal-focus);
+  }
+
+  .cell.today .num {
+    color: var(--cal-focus);
+    font-size: 1.35rem;
+    padding: 0 4px;
+  }
+
+  .cell.first-of-month .num::after {
+    content: ' ' attr(data-month);
+    font-size: 0.85rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cal-muted);
+  }
+
+  .chips { margin-top: calc(var(--lanes, 0) * var(--lane-h)); }
+
+  .tally { display: none; }
+
+  .chip {
+    display: flex;
+    gap: 0.35rem;
+    align-items: baseline;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1.25;
+    padding: 0.05rem 0.3rem;
+    margin-bottom: 0.1rem;
+    background: var(--cal-chip);
+    color: var(--cal-ink);
+    border: 0;
+    border-left: 2px solid var(--cal-focus);
+    cursor: pointer;
+  }
+
+  .chip:hover { background: var(--cal-chip-hover); }
+
+  .chip .at {
+    color: var(--cal-muted);
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+
+  .chip .what {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .chip .rep { flex: none; color: var(--cal-muted); }
+
+  .more {
+    display: block;
+    font: inherit;
+    font-size: 0.9rem;
+    letter-spacing: 0.06em;
+    color: var(--cal-muted);
+    background: transparent;
+    border: 0;
+    padding: 0.05rem 0.3rem;
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .more:hover { color: var(--cal-ink); }
+
+  /* docs/ui.md § Layout */
+
+  .bands {
+    position: absolute;
+    top: calc(var(--cell-pad) + var(--num-h));
+    left: 0;
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-rows: var(--lane-h);
+    pointer-events: none;
+  }
+
+  .band {
+    grid-column: calc(var(--col) + 1) / span var(--span);
+    grid-row: calc(var(--lane) + 1);
+    min-width: 0;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font: inherit;
+    font-size: 0.95rem;
+    text-align: left;
+    margin: 0 calc(var(--cell-pad) + 1px) 0.15rem var(--cell-pad);
+    padding: 0 0.35rem;
+    background: var(--cal-ground-2);
+    color: var(--cal-ink);
+    border: 1px solid var(--cal-rule-firm);
+    border-left: 3px solid var(--cal-ink);
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .band:hover { border-color: var(--cal-focus); }
+
+  .band.from-before {
+    border-left-style: dashed;
+    border-left-color: var(--cal-muted);
+    margin-left: 0;
+  }
+
+  .band.into-after {
+    border-right-style: dashed;
+    border-right-color: var(--cal-muted);
+    margin-right: 0;
+  }
+
+  .band .what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .band .tail { margin-left: auto; color: var(--cal-muted); flex: none; }
+
+  .band-hidden {
+    grid-column: 1 / -1;
+    font-size: 0.85rem;
+    color: var(--cal-muted);
+    padding-left: var(--cell-pad);
+  }
+
+  /* ── the docket ───────────────────────────────────────────────────── */
+
+  .docket {
+    position: sticky;
+    top: 1rem;
+    border: 1px solid var(--cal-rule-firm);
+    overflow: hidden;
+    --stage: #24151a;
+    --stage-2: #301c22;
+    --phosphor-strength: 0.22;
+  }
+
+  .docket-head {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem 0.7rem;
+    border-bottom: 1px solid rgba(240, 223, 200, 0.2);
+  }
+
+  .docket-head .dow {
+    font-size: 0.95rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--stage-muted);
+  }
+
+  .docket-head .dnum {
+    font-family: var(--fontpack-display);
+    font-size: 2.4rem;
+    line-height: 1;
+    letter-spacing: 0.06em;
+    padding: 4px;
+    color: var(--stage-ink);
+  }
+
+  .docket-head .of { font-size: 0.95rem; color: var(--stage-muted); }
+
+  .docket-head .add {
+    margin-left: auto;
+    font: inherit;
+    font-size: 1.4rem;
+    line-height: 1;
+    color: var(--gold-bright);
+    background: transparent;
+    border: 1px solid rgba(217, 169, 78, 0.45);
+    padding: 0.05rem 0.5rem 0.2rem;
+    cursor: pointer;
+  }
+
+  .docket-head .add:hover { background: rgba(217, 169, 78, 0.14); }
+
+  .allday {
+    position: relative;
+    z-index: 3;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid rgba(240, 223, 200, 0.2);
+  }
+
+  .allday button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: 0.95rem;
+    color: var(--stage-ink);
+    background: rgba(240, 223, 200, 0.08);
+    border: 0;
+    border-left: 3px solid var(--stage-ink);
+    padding: 0.1rem 0.4rem;
+    margin-bottom: 0.15rem;
+    cursor: pointer;
+  }
+
+  .allday button:hover { background: rgba(240, 223, 200, 0.16); }
+
+  .axis {
+    position: relative;
+    z-index: 3;
+    height: calc(var(--hours) * var(--hour-h));
+    margin: 0.5rem 0 0.9rem;
+  }
+
+  .rules {
+    position: absolute;
+    inset: 0 0 0 var(--gutter);
+    background: repeating-linear-gradient(
+      180deg,
+      rgba(240, 223, 200, 0.16) 0 1px,
+      transparent 1px var(--hour-h)
+    );
+  }
+
+  .hours {
+    position: absolute;
+    inset: 0;
+    width: var(--gutter);
+  }
+
+  .hours span {
+    position: absolute;
+    right: 0.45rem;
+    transform: translateY(-0.55em);
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
+    color: var(--stage-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .slots { position: absolute; inset: 0 0.5rem 0 var(--gutter); }
+
+  .slot {
+    position: absolute;
+    display: block;
+    min-height: 1.35rem;
+    overflow: hidden;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1.15;
+    text-align: left;
+    padding: 0.1rem 0.35rem;
+    background: rgba(217, 169, 78, 0.16);
+    color: var(--stage-ink);
+    border: 1px solid rgba(217, 169, 78, 0.3);
+    border-left: 3px solid var(--gold-bright);
+    cursor: pointer;
+  }
+
+  .slot:hover { background: rgba(217, 169, 78, 0.3); }
+
+  .slot .at {
+    display: block;
+    color: var(--stage-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .slot .what {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .slot.short { padding-top: 0; line-height: 1; }
+
+  .slot.short .at { display: inline; margin-right: 0.3rem; }
+
+  .slot.short .what { display: inline; }
+
+  .nowline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 0;
+    border-top: 1px solid var(--oxblood);
+    z-index: 4;
+    pointer-events: none;
+  }
+
+  .nowline::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--gutter) - 3px);
+    top: -3px;
+    width: 6px;
+    height: 6px;
+    background: var(--oxblood);
+    border-radius: 50%;
+  }
+
+  .nowline::after {
+    content: attr(data-at);
+    position: absolute;
+    left: 0.2rem;
+    top: -0.7em;
+    font-size: 0.85rem;
+    color: var(--oxblood);
+    background: var(--stage);
+    padding-right: 0.2rem;
+  }
+
+  .empty {
+    position: relative;
+    z-index: 3;
+    padding: 1.4rem 1rem;
+    font-family: var(--fontpack-prose);
+    font-size: 1.05rem;
+    color: var(--stage-muted);
+  }
+
+  /* ── footer, dialog ───────────────────────────────────────────────── */
+
+  footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.2rem;
+    padding: 1.2rem 0 2rem;
+    font-size: 0.95rem;
+    letter-spacing: 0.06em;
+    color: var(--cal-muted);
+  }
+
+  footer a { color: inherit; }
+
+  footer .keys { margin-left: auto; }
+
+  kbd {
+    font: inherit;
+    border: 1px solid var(--cal-rule);
+    padding: 0 0.3rem;
+    color: var(--cal-ink);
+  }
+
+  dialog {
+    width: min(30rem, 94vw);
+    padding: 0;
+    color: var(--cal-ink);
+    background-color: var(--cal-ground);
+    background-image: repeating-conic-gradient(var(--dither) 0% 25%, transparent 0% 50%);
+    background-size: var(--gesso-cell) var(--gesso-cell);
+    border: 1px solid var(--cal-rule-firm);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    html:root dialog {
+      background-image: repeating-conic-gradient(var(--stage-2) 0% 25%, transparent 0% 50%);
+    }
+  }
+
+  dialog::backdrop { background: rgba(26, 13, 15, 0.62); }
+
+  dialog form { margin: 0; padding: 1.2rem 1.4rem 1.4rem; }
+
+  dialog h2 {
+    font-family: var(--fontpack-display);
+    font-weight: 400;
+    font-size: 1.8rem;
+    line-height: 1.1;
+    letter-spacing: 0.06em;
+    margin: 0 0 1rem;
+    padding: 4px 4px 4px 0;
+  }
+
+  dialog label {
+    display: block;
+    font-size: 0.9rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cal-muted);
+    margin: 0.8rem 0 0.2rem;
+  }
+
+  dialog input, dialog textarea {
+    width: 100%;
+    font: inherit;
+    font-size: 1rem;
+    color: var(--cal-ink);
+    background: var(--cal-chip);
+    border: 1px solid var(--cal-rule);
+    padding: 0.4rem 0.5rem;
+  }
+
+  dialog textarea { font-family: var(--fontpack-prose); min-height: 4rem; resize: vertical; }
+
+  dialog .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+
+  dialog .prose {
+    font-family: var(--fontpack-prose);
+    font-size: 1.05rem;
+    margin: 0.5rem 0;
+    white-space: pre-wrap;
+  }
+
+  dialog .fact {
+    font-size: 0.95rem;
+    color: var(--cal-muted);
+    margin: 0.25rem 0;
+    word-break: break-word;
+  }
+
+  dialog .actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 1.3rem;
+  }
+
+  dialog button {
+    font: inherit;
+    font-size: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cal-ink);
+    background: transparent;
+    border: 1px solid var(--cal-rule);
+    padding: 0.35rem 0.9rem;
+    cursor: pointer;
+  }
+
+  dialog button:hover { background: var(--cal-chip); }
+
+  dialog button.go { border-color: var(--cal-focus); color: var(--cal-focus); }
+
+  dialog button.kill { border-color: var(--cal-alarm); color: var(--cal-alarm); }
+
+  dialog .fail { color: var(--cal-alarm); font-size: 0.95rem; margin-top: 0.6rem; }
+
+  dialog .fail:empty { margin: 0; }
+
+  @media (max-width: 640px) {
+    .page { padding-top: 1rem; }
+    .cell { min-height: 4.6rem; }
+    .cell .chips { display: none; }
+    .num { font-size: 1rem; }
+    .band { font-size: 0.85rem; }
+    footer .keys { display: none; }
+
+    .cell .tally:not(:empty) {
+      display: block;
+      position: absolute;
+      left: var(--cell-pad);
+      bottom: 0.3rem;
+      font-size: 0.85rem;
+      color: var(--cal-muted);
+      border-bottom: 2px solid var(--cal-focus);
+      padding-bottom: 1px;
+    }
+  }
+</style>
+</head>
+<body class="gesso">
+<!-- zanni:boil -->
+<!-- zanni:gesso -->
+<!-- zanni:phosphor -->
+<!-- zanni:fontpack -->
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="title">
+      <h1 class="fontpack-display boil-text-squiggle">{{ month_name }}</h1>
+      <span class="year fontpack-mono">{{ year }}</span>
+    </div>
+    <nav class="helm" aria-label="Calendar navigation">
+      <a class="step" href="{{ prev_url }}" title="Previous month (p)" rel="prev">&#8592;</a>
+      <a class="now" href="/calendar" title="Today (t)">Today</a>
+      <a class="step" href="{{ next_url }}" title="Next month (n)" rel="next">&#8594;</a>
+      {% if may_create %}
+      <button type="button" class="make" data-new="{{ selected.iso }}">New event</button>
+      {% endif %}
+    </nav>
+  </header>
+
+  <div class="frame">
+
+    <section class="month" role="grid" aria-label="{{ month_name }} {{ year }}" tabindex="-1">
+      <div class="weekdays boil-ui-fine" role="row">
+        {% for label in weekday_labels %}<span role="columnheader">{{ label }}</span>{% endfor %}
+      </div>
+      <div class="weeks">
+        {% for week in weeks %}
+        <div class="week" style="--lanes:{{ week.lanes }}" role="row">
+          {% for day in week.days %}
+          <div class="cell{{ ' in-month' if day.in_month }}{{ ' outside' if not day.in_month }}{{ ' today' if day.is_today }}{{ ' past' if day.is_past }}{{ ' selected' if day.is_selected }}{{ ' first-of-month' if day.day == 1 }}"
+               role="gridcell"
+               data-date="{{ day.iso }}"
+               data-month="{{ day.month_abbr }}"
+               tabindex="{{ 0 if day.is_selected else -1 }}"
+               aria-selected="{{ 'true' if day.is_selected else 'false' }}"
+               aria-label="{{ day.long_label }}, {{ day.count }} event{{ '' if day.count == 1 else 's' }}">
+            <span class="num{{ ' boil-text-fine' if day.is_today }}" data-month="{{ day.month_abbr }}">{{ day.day }}</span>
+            <span class="tally" aria-hidden="true">{{ day.count or '' }}</span>
+            <div class="chips">
+              {% for chip in day.chips %}
+              <button type="button" class="chip" data-event="{{ chip.id }}">
+                <span class="at">{{ chip.at }}</span><span class="what">{{ chip.title }}</span>{% if chip.recurring %}<span class="rep" title="Repeats">&#8635;</span>{% endif %}
+              </button>
+              {% endfor %}
+              {% if day.overflow %}
+              <a class="more" href="{{ day.url }}">+{{ day.overflow }} more</a>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+          <div class="bands">
+            {% for band in week.bands %}
+            <button type="button"
+                    class="band{{ ' from-before' if band.continues_before }}{{ ' into-after' if band.continues_after }}"
+                    style="--col:{{ band.col }};--span:{{ band.span }};--lane:{{ band.lane }}"
+                    data-event="{{ band.id }}"
+                    title="{{ band.range_label }}">
+              {% if band.continues_before %}<span aria-hidden="true">&#8249;</span>{% endif %}
+              <span class="what">{{ band.title }}</span>
+              {% if band.continues_after %}<span class="tail" aria-hidden="true">&#8250;</span>{% endif %}
+            </button>
+            {% endfor %}
+            {% if week.bands_hidden %}
+            <span class="band-hidden">+{{ week.bands_hidden }} spanning</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <aside class="docket gesso-stage phosphor-host phosphor-soft" aria-label="Day detail">
+      <div class="docket-head">
+        <span class="dow">{{ selected.dow }}</span>
+        <span class="dnum fontpack-display boil-text-fine">{{ selected.day }}</span>
+        <span class="of">{{ selected.month_abbr }}</span>
+        {% if may_create %}
+        <button type="button" class="add" data-new="{{ selected.iso }}" title="New event on this day (c)">+</button>
+        {% endif %}
+      </div>
+
+      {% if selected.allday %}
+      <div class="allday">
+        {% for item in selected.allday %}
+        <button type="button" data-event="{{ item.id }}">{{ item.title }}{% if item.range_label %} <span class="tail">{{ item.range_label }}</span>{% endif %}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if selected.slots %}
+      <div class="axis" style="--hours:{{ selected.hours }}" data-lo="{{ selected.lo }}">
+        <div class="rules"></div>
+        <div class="hours" aria-hidden="true">
+          {% for hour in selected.hour_marks %}
+          <span style="top:{{ hour.pct }}%">{{ hour.label }}</span>
+          {% endfor %}
+        </div>
+        <div class="slots">
+          {% for slot in selected.slots %}
+          <button type="button"
+                  class="slot{{ ' short' if slot.short }}"
+                  style="top:{{ slot.top }}%;height:{{ slot.height }}%;left:{{ slot.left }}%;width:{{ slot.width }}%"
+                  data-event="{{ slot.id }}">
+            <span class="at">{{ slot.at }}</span><span class="what">{{ slot.title }}</span>
+          </button>
+          {% endfor %}
+        </div>
+        {% if selected.now_pct is not none %}
+        <div class="nowline" id="nowline" style="top:{{ selected.now_pct }}%" data-at="{{ selected.now_label }}"></div>
+        {% endif %}
+      </div>
+      {% elif not selected.allday %}
+      <p class="empty">Nothing on the docket.</p>
+      {% endif %}
+    </aside>
+
+  </div>
+
+  <footer>
+    <span>{{ event_count }} event{{ '' if event_count == 1 else 's' }} in view</span>
+    <span>{{ tz_label }}</span>
+    <a href="/api">api</a>
+    <span class="keys"><kbd>t</kbd> today <kbd>p</kbd>/<kbd>n</kbd> month <kbd>&#8593;&#8595;&#8592;&#8594;</kbd> day <kbd>&#9166;</kbd> open <kbd>c</kbd> new</span>
+  </footer>
+
+</div>
+
+<dialog id="sheet"></dialog>
+
+<template id="tpl-new">
+  <form method="dialog">
+    <h2 class="fontpack-display">New event</h2>
+    <label for="f-title">Title</label>
+    <input id="f-title" name="title" type="text" required autocomplete="off">
+    <div class="row">
+      <div><label for="f-start">Starts</label><input id="f-start" name="dtstart" type="datetime-local" required></div>
+      <div><label for="f-end">Ends</label><input id="f-end" name="dtend" type="datetime-local"></div>
+    </div>
+    <label for="f-where">Location</label>
+    <input id="f-where" name="location" type="text" autocomplete="off">
+    <label for="f-note">Description</label>
+    <textarea id="f-note" name="description"></textarea>
+    <label for="f-rrule">Repeats (RRULE)</label>
+    <input id="f-rrule" name="rrule" type="text" placeholder="FREQ=WEEKLY;BYDAY=MO" autocomplete="off">
+    <p class="fail" data-fail></p>
+    <div class="actions">
+      <button type="button" data-close>Cancel</button>
+      <button type="submit" class="go">Create</button>
+    </div>
+  </form>
+</template>
+
+<template id="tpl-view">
+  <form method="dialog">
+    <h2 class="fontpack-display" data-slot="title"></h2>
+    <p class="fact" data-slot="when"></p>
+    <p class="fact" data-slot="where" hidden></p>
+    <p class="prose" data-slot="description" hidden></p>
+    <p class="fact" data-slot="repeats" hidden></p>
+    <p class="fact" data-slot="origin"></p>
+    <p class="fail" data-fail></p>
+    <div class="actions">
+      <button type="button" class="kill" data-delete>Delete</button>
+      <button type="button" data-close>Close</button>
+    </div>
+  </form>
+</template>
+
+<script>
+(function () {
+  'use strict';
+
+  var sheet = document.getElementById('sheet');
+
+  function open(tplId, fill) {
+    var node = document.getElementById(tplId).content.cloneNode(true);
+    sheet.replaceChildren(node);
+    var form = sheet.querySelector('form');
+    sheet.querySelectorAll('[data-close]').forEach(function (b) {
+      b.addEventListener('click', function () { sheet.close(); });
+    });
+    fill(form);
+    sheet.showModal();
+    var first = form.querySelector('input, button.go, button');
+    if (first) first.focus();
+    return form;
+  }
+
+  function fail(form, message) {
+    form.querySelector('[data-fail]').textContent = message;
+  }
+
+  function set(form, name, text) {
+    var node = form.querySelector('[data-slot="' + name + '"]');
+    if (!node) return;
+    if (text) { node.textContent = text; node.hidden = false; }
+    else { node.hidden = true; }
+  }
+
+  /* ── create ─────────────────────────────────────────────────────── */
+
+  function openNew(iso) {
+    var form = open('tpl-new', function (f) {
+      f.elements.dtstart.value = iso + 'T09:00';
+    });
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      submitNew(form);
+    });
+  }
+
+  function stamp(value) {
+    if (!value) return null;
+    var offset = -new Date(value).getTimezoneOffset();
+    var sign = offset < 0 ? '-' : '+';
+    var mins = Math.abs(offset);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return value + ':00' + sign + pad(Math.floor(mins / 60)) + ':' + pad(mins % 60);
+  }
+
+  async function submitNew(form) {
+    var body = {
+      title: form.elements.title.value.trim(),
+      dtstart: stamp(form.elements.dtstart.value),
+      dtend: stamp(form.elements.dtend.value),
+      location: form.elements.location.value.trim() || null,
+      description: form.elements.description.value.trim() || null,
+      rrule: form.elements.rrule.value.trim() || null
+    };
+    if (!body.title || !body.dtstart) { fail(form, 'A title and a start time are required.'); return; }
+    var res = await fetch('/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) { fail(form, 'Could not create the event: ' + res.status + ' ' + await res.text()); return; }
+    location.reload();
+  }
+
+  /* ── view ───────────────────────────────────────────────────────── */
+
+  var WHEN = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  });
+  var DAY = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'
+  });
+
+  function describe(e) {
+    if (e.all_day) return DAY.format(new Date(e.dtstart)) + ' \u00b7 all day';
+    var from = WHEN.format(new Date(e.dtstart));
+    if (!e.dtend) return from;
+    return from + ' \u2192 ' + WHEN.format(new Date(e.dtend));
+  }
+
+  async function openEvent(id) {
+    var res = await fetch('/events/' + id);
+    if (!res.ok) { window.alert('Could not load that event: ' + res.status); return; }
+    var e = await res.json();
+    var form = open('tpl-view', function (f) {
+      set(f, 'title', e.title);
+      set(f, 'when', describe(e));
+      set(f, 'where', e.location);
+      set(f, 'description', e.description);
+      set(f, 'repeats', e.rrule ? 'Repeats: ' + e.rrule : null);
+      set(f, 'origin', 'Created by ' + e.created_by + (e.source ? ' from ' + e.source : ''));
+    });
+    form.querySelector('[data-delete]').addEventListener('click', async function () {
+      if (!window.confirm('Delete "' + e.title + '"?')) return;
+      var del = await fetch('/events/' + id, { method: 'DELETE' });
+      if (!del.ok) { fail(form, 'Could not delete: ' + del.status); return; }
+      location.reload();
+    });
+  }
+
+  /* ── wiring ─────────────────────────────────────────────────────── */
+
+  document.addEventListener('click', function (ev) {
+    var chip = ev.target.closest('[data-event]');
+    if (chip) { ev.stopPropagation(); openEvent(chip.dataset.event); return; }
+    var make = ev.target.closest('[data-new]');
+    if (make) { ev.stopPropagation(); openNew(make.dataset.new); return; }
+    var cell = ev.target.closest('.cell');
+    if (cell && !ev.target.closest('a')) { location.search = '?day=' + cell.dataset.date; }
+  });
+
+  /* ── keyboard ───────────────────────────────────────────────────── */
+
+  var cells = Array.prototype.slice.call(document.querySelectorAll('.cell'));
+  var focused = cells.findIndex(function (c) { return c.getAttribute('aria-selected') === 'true'; });
+  if (focused < 0) focused = 0;
+
+  function moveTo(index) {
+    if (index < 0 || index >= cells.length) return;
+    cells[focused].tabIndex = -1;
+    focused = index;
+    cells[focused].tabIndex = 0;
+    cells[focused].focus();
+  }
+
+  var MOVES = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+
+  document.addEventListener('keydown', function (ev) {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (sheet.open) return;
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (typing) return;
+
+    if (ev.key in MOVES && document.activeElement.classList.contains('cell')) {
+      ev.preventDefault();
+      moveTo(focused + MOVES[ev.key]);
+      return;
+    }
+    switch (ev.key) {
+      case 't': location.href = '/calendar'; break;
+      case 'p': location.href = {{ prev_url | tojson }}; break;
+      case 'n': location.href = {{ next_url | tojson }}; break;
+      case 'c': openNew(cells[focused].dataset.date); break;
+      case 'Enter':
+        if (document.activeElement.classList.contains('cell')) {
+          ev.preventDefault();
+          location.search = '?day=' + cells[focused].dataset.date;
+        }
+        break;
+      default: return;
+    }
+  });
+
+  /* ── the now line ───────────────────────────────────────────────── */
+
+  var nowline = document.getElementById('nowline');
+  if (nowline) {
+    var axis = nowline.parentElement;
+    var lo = Number(axis.dataset.lo);
+    var hours = Number(getComputedStyle(axis).getPropertyValue('--hours'));
+    setInterval(function () {
+      var d = new Date();
+      var pct = ((d.getHours() * 60 + d.getMinutes()) - lo * 60) / (hours * 60) * 100;
+      if (pct < 0 || pct > 100) return;
+      nowline.style.top = pct + '%';
+      nowline.dataset.at = String(d.getHours()).padStart(2, '0') + ':' +
+                           String(d.getMinutes()).padStart(2, '0');
+    }, 60000);
+  }
+})();
+</script>
+</body>
+</html>

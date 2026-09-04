@@ -1,0 +1,78 @@
+#!/usr/bin/env node
+/* cal-check — the calendar's own laws, asserted on the built template.
+ *
+ * docs/ui.md
+ *
+ *   cal-check FILE.html
+ */
+'use strict';
+const fs = require('fs');
+
+const file = process.argv[2];
+if (!file) { process.stderr.write('usage: cal-check FILE.html\n'); process.exit(2); }
+const html = fs.readFileSync(file, 'utf8');
+const css = (html.match(/<style[^>]*>([\s\S]*?)<\/style>/g) || []).join('\n');
+const bare = html.replace(/<!--[\s\S]*?-->/g, '');
+
+let pass = 0, fail = 0;
+const check = (name, ok, detail) => ok
+  ? (pass++, console.log('  ok   ' + name))
+  : (fail++, console.log('  FAIL ' + name + (detail ? ' :: ' + detail : '')));
+
+console.log('[calendar] ' + file);
+
+/* Filter area. */
+console.log('[area] what may carry a filter');
+const boiled = (bare.match(/class="[^"]*\bboil-[\w-]+[^"]*"/g) || []);
+check('every boiled element is a leaf-ish one', boiled.length > 0 && boiled.length <= 6,
+  boiled.length + ' boiled elements: ' + boiled.join(' | '));
+
+const wearsBoil = (cls) => new RegExp(
+  'class="[^"]*(?:\\b' + cls + '(?![\\w-])[^"]*\\bboil-|\\bboil-[\\w-]+[^"]*\\b' + cls + '(?![\\w-]))'
+).test(bare);
+
+const forbidden = ['weeks', 'week', 'month', 'cell', 'chips', 'bands', 'band',
+                   'chip', 'slots', 'slot', 'axis', 'docket', 'page', 'frame'];
+forbidden.forEach((cls) => {
+  check('.' + cls + ' is not boiled', !wearsBoil(cls));
+});
+
+/* Containing blocks. */
+console.log('[layout] absolute positioning is not reparented');
+check('the band overlay sits inside an unfiltered .week',
+  /class="week"[^>]*>/.test(bare) && !wearsBoil('week'));
+check('the dialog lives at body level, outside every filter',
+  /<dialog id="sheet"><\/dialog>\s*(<template|<script)/.test(bare));
+
+/* Legibility. */
+console.log('[legibility] the things a person scans for');
+check('event chips carry no filter', !/class="chip[^"]*boil/.test(bare));
+check('band titles carry no filter', !/class="band[^"]*boil/.test(bare));
+check('docket slots carry no filter', !/class="slot[^"]*boil/.test(bare));
+check('the technical face keeps VT323 off the floor',
+  /--fontpack-mono/.test(css) && !/font-size:\s*0\.[0-7]\d*rem/.test(css));
+
+/* Honesty about extent. */
+console.log('[honesty] a multi-day event is drawn at its true extent');
+check('bands span real columns', /grid-column:\s*calc\(var\(--col\)/.test(css));
+check('a clipped band is marked at both edges',
+  /\.band\.from-before\s*\{/.test(css) && /\.band\.into-after\s*\{/.test(css));
+check('overflow is counted, not hidden', /\+\{\{ day\.overflow \}\} more/.test(html));
+
+/* The palette. */
+console.log('[palette] semantics derive from gesso');
+['--cal-ground', '--cal-ink', '--cal-rule', '--cal-focus', '--cal-alarm'].forEach((v) =>
+  check(v + ' is defined', new RegExp('\\' + v + ':').test(css)));
+check('the dark register remaps only the calendar namespace',
+  /html:root\s*\{[\s\S]{0,900}?--cal-ground:/.test(css));
+
+/* The floor. */
+console.log('[floor] accessibility and motion');
+check('the grid is announced as a grid', /role="grid"/.test(bare) && /role="gridcell"/.test(bare));
+check('focus is visible', /:focus-visible\s*\{[^{}]*outline:/.test(css));
+check('day cells carry a roving tabindex', /tabindex="\{\{ 0 if day\.is_selected else -1 \}\}"/.test(html));
+check('reduced motion is honoured by the boil driver',
+  /prefers-reduced-motion/.test(html));
+
+console.log('[calendar] ' + pass + ' passed, ' + fail + ' failed');
+process.exit(fail ? 1 : 0);

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Build the UI template for local development. Nix does the same in the flake.
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+zanni="${ZANNI_REPO:-$HOME/dev/zanni}"
+out="${1:-$repo/calendar/templates/month.html}"
+
+export ZANNI_ASSETS="$zanni/assets"
+
+node "$zanni/bin/zanni-inline" \
+  --component boil --component gesso --component phosphor --component fontpack \
+  "$repo/calendar/templates/month.html.in" -o "$out"
+node "$zanni/bin/zanni-check" "$out"
+node "$repo/bin/cal-check" "$out"
+echo "built $out"
