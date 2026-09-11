@@ -55,6 +55,9 @@
               calendar/templates/month.html.in -o $out/templates/month.html
             zanni-check $out/templates/month.html
             node bin/cal-check $out/templates/month.html
+            GLUCK_CALENDAR_MODULE=$out ${pkgs.python3.withPackages (ps: with ps; [
+              flask waitress requests duckdb pyjwt cryptography python-dateutil pytz
+            ])}/bin/python tests/test_bearer.py
             runHook postInstall
           '';
         };

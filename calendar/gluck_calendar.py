@@ -160,7 +160,7 @@ def bearer_to_remote_headers():
             algorithms=["RS256"],
             issuer=OIDC_ISSUER,
             options={
-                "require": ["exp", "iat", "iss", "sub", "client_id"],
+                "require": ["exp", "iat", "iss", "client_id"],
                 "verify_aud": False,
             },
         )
@@ -183,6 +183,10 @@ def bearer_to_remote_headers():
 
     if client_id not in OIDC_CLIENT_IDS:
         return jsonify(error="token not issued for this client"), 401
+
+    # A person's token carries a subject; only a machine's may omit one.
+    if not claims.get("sub"):
+        return jsonify(error="token is missing the sub claim"), 401
 
     userinfo = fetch_userinfo(token, claims["sub"])
     username = (
@@ -619,6 +623,11 @@ def calendar_month(year, month):
 @app.get("/health")
 def health():
     return jsonify(status="ok")
+
+
+@app.get("/whoami")
+def whoami():
+    return jsonify(user=caller(), groups=caller_groups())
 
 
 @app.post("/events")
