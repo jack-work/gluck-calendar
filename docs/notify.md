@@ -130,6 +130,12 @@ notifier reads its own database directly.
 | grant | herald `policy.kcal-notify = [ "say" ]` |
 | destination | herald `routes.gluck`; the notifier names the route, never a chat id |
 
+Those last two entries predate this service. Aria `69e15f1a` ("deploy
+kcal-notify: service identity end to end") added them to spain-flake and then
+stopped before deploying, so they were already in place when the notifier was
+written. They are load-bearing, not leftovers: do not remove them as
+unexplained.
+
 `one_factor` is not a weakening: `client_credentials` has no user, so there is
 no second factor it could apply to.
 
