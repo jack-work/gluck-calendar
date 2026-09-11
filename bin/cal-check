@@ -66,6 +66,27 @@ console.log('[palette] semantics derive from gesso');
 check('the dark register remaps only the calendar namespace',
   /html:root\s*\{[\s\S]{0,900}?--cal-ground:/.test(css));
 
+/* The keyboard. */
+console.log('[keys] navigation');
+check('hjkl move as well as the arrows',
+  /ArrowLeft: -1[\s\S]{0,120}h: -1, l: 1, k: -7, j: 7/.test(bare));
+/* The bug this replaced: the grid holds no focus when the page loads, so
+   every arrow key was swallowed until something was clicked. */
+check('the first navigation key takes focus instead of being swallowed',
+  /function grab\(\)/.test(bare) && /if \(grab\(\)\) moveTo/.test(bare));
+check('a key pressed while typing is not navigation',
+  /INPUT\|TEXTAREA\|SELECT/.test(bare) && /isContentEditable/.test(bare));
+
+/* Prose. */
+console.log('[prose] the details pane');
+check('descriptions go through the renderer, not innerHTML',
+  /zanni\.scriba\.render\(node, text\)/.test(bare) &&
+  !/description[^\n]*innerHTML/.test(bare));
+check('it degrades to text when the renderer is absent',
+  /else node\.textContent = text;/.test(bare));
+check('the pane wears the hand before scripts run',
+  /class="prose scriba"/.test(bare));
+
 /* The floor. */
 console.log('[floor] accessibility and motion');
 check('the grid is announced as a grid', /role="grid"/.test(bare) && /role="gridcell"/.test(bare));

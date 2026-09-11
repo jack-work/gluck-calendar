@@ -149,16 +149,35 @@ datetime, so a time entered across a DST boundary is stored correctly.
 
 | key | does |
 |---|---|
+| `h` `j` `k` `l` | move the day focus: left, down a week, up a week, right |
+| arrows | the same |
+| `Enter` `o` | load that day's docket |
+| `g` `G` | first and last cell in view |
 | `t` | today |
 | `p` `n` | previous, next month |
-| arrows | move the day focus, no server trip |
-| `Enter` | load that day's docket |
 | `c` | new event on the focused day |
 | `Esc` | close the dialog |
 
 Day cells carry a roving tabindex: the selected one is `0`, the rest `-1`.
-Arrow keys move focus only; navigation is an explicit `Enter`. Nothing in the
-page builds DOM from an HTML string.
+Movement is focus only; loading a day is an explicit `Enter`.
+
+**The grid holds no focus when the page loads.** The first navigation key
+takes it and does not move, rather than being swallowed. Without that, every
+arrow key appeared dead until something was clicked, which is exactly how it
+behaved before and what the live test now covers.
+
+Keys are inert while a field or a `contenteditable` has focus, so `hjkl` typed
+into the title box are letters.
+
+## The details pane
+
+Descriptions are markdown, rendered by zanni's `scriba`: newlines preserved,
+bare URLs linked, and the whole thing escaped before any markup is applied.
+
+The pane wears `class="prose scriba"` in the template so the typography is
+right before scripts run, and falls back to `textContent` if the renderer is
+absent. Nothing in the page builds DOM from an HTML string except `scriba`
+itself, which does it in exactly one audited place.
 
 ## Deploying
 

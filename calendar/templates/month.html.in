@@ -616,8 +616,9 @@
     font-family: var(--fontpack-prose);
     font-size: 1.05rem;
     margin: 0.5rem 0;
-    white-space: pre-wrap;
   }
+
+  dialog .prose.scriba { --scriba-code-bg: var(--cal-chip); }
 
   dialog .fact {
     font-size: 0.95rem;
@@ -681,6 +682,7 @@
 <!-- zanni:gesso -->
 <!-- zanni:phosphor -->
 <!-- zanni:fontpack -->
+<!-- zanni:scriba -->
 
 <div class="page">
 
@@ -802,7 +804,7 @@
     <span>{{ event_count }} event{{ '' if event_count == 1 else 's' }} in view</span>
     <span>{{ tz_label }}</span>
     <a href="/api">api</a>
-    <span class="keys"><kbd>t</kbd> today <kbd>p</kbd>/<kbd>n</kbd> month <kbd>&#8593;&#8595;&#8592;&#8594;</kbd> day <kbd>&#9166;</kbd> open <kbd>c</kbd> new</span>
+    <span class="keys"><kbd>hjkl</kbd> day <kbd>p</kbd>/<kbd>n</kbd> month <kbd>t</kbd> today <kbd>&#9166;</kbd> open <kbd>c</kbd> new</span>
   </footer>
 
 </div>
@@ -837,7 +839,7 @@
     <h2 class="fontpack-display" data-slot="title"></h2>
     <p class="fact" data-slot="when"></p>
     <p class="fact" data-slot="where" hidden></p>
-    <p class="prose" data-slot="description" hidden></p>
+    <p class="prose scriba" data-slot="description" hidden></p>
     <p class="fact" data-slot="repeats" hidden></p>
     <p class="fact" data-slot="origin"></p>
     <p class="fail" data-fail></p>
@@ -877,6 +879,17 @@
     if (!node) return;
     if (text) { node.textContent = text; node.hidden = false; }
     else { node.hidden = true; }
+  }
+
+  /* Descriptions are written by a person in a box, so they are markdown:
+     newlines kept, urls linked. zanni.scriba escapes before it marks up. */
+  function setProse(form, name, text) {
+    var node = form.querySelector('[data-slot="' + name + '"]');
+    if (!node) return;
+    if (!text) { node.hidden = true; return; }
+    node.hidden = false;
+    if (window.zanni && window.zanni.scriba) window.zanni.scriba.render(node, text);
+    else node.textContent = text;
   }
 
   /* ── create ─────────────────────────────────────────────────────── */
@@ -944,7 +957,7 @@
       set(f, 'title', e.title);
       set(f, 'when', describe(e));
       set(f, 'where', e.location);
-      set(f, 'description', e.description);
+      setProse(f, 'description', e.description);
       set(f, 'repeats', e.rrule ? 'Repeats: ' + e.rrule : null);
       set(f, 'origin', 'Created by ' + e.created_by + (e.source ? ' from ' + e.source : ''));
     });
@@ -973,6 +986,20 @@
   var focused = cells.findIndex(function (c) { return c.getAttribute('aria-selected') === 'true'; });
   if (focused < 0) focused = 0;
 
+  function onGrid() {
+    return document.activeElement && document.activeElement.classList.contains('cell');
+  }
+
+  /* The grid does not hold focus when the page loads, so the first
+     navigation key takes it rather than being swallowed. Without this,
+     arrow keys appear not to work at all until something is clicked. */
+  function grab() {
+    if (onGrid()) return true;
+    cells[focused].tabIndex = 0;
+    cells[focused].focus();
+    return false;
+  }
+
   function moveTo(index) {
     if (index < 0 || index >= cells.length) return;
     cells[focused].tabIndex = -1;
@@ -981,30 +1008,38 @@
     cells[focused].focus();
   }
 
-  var MOVES = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+  var MOVES = {
+    ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7,
+    h: -1, l: 1, k: -7, j: 7
+  };
+
+  var OPEN = { Enter: 1, o: 1 };
 
   document.addEventListener('keydown', function (ev) {
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
     if (sheet.open) return;
-    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-    if (typing) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    if (document.activeElement.isContentEditable) return;
 
-    if (ev.key in MOVES && document.activeElement.classList.contains('cell')) {
+    if (Object.prototype.hasOwnProperty.call(MOVES, ev.key)) {
       ev.preventDefault();
-      moveTo(focused + MOVES[ev.key]);
+      if (grab()) moveTo(focused + MOVES[ev.key]);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(OPEN, ev.key)) {
+      if (!grab()) return;
+      ev.preventDefault();
+      location.search = '?day=' + cells[focused].dataset.date;
       return;
     }
     switch (ev.key) {
       case 't': location.href = '/calendar'; break;
       case 'p': location.href = {{ prev_url | tojson }}; break;
       case 'n': location.href = {{ next_url | tojson }}; break;
-      case 'c': openNew(cells[focused].dataset.date); break;
-      case 'Enter':
-        if (document.activeElement.classList.contains('cell')) {
-          ev.preventDefault();
-          location.search = '?day=' + cells[focused].dataset.date;
-        }
-        break;
+      case 'g': moveTo(0); grab(); break;
+      case 'G': moveTo(cells.length - 1); grab(); break;
+      case 'c': ev.preventDefault(); openNew(cells[focused].dataset.date); break;
+      case '?': ev.preventDefault(); document.querySelector('.keys').classList.toggle('open'); break;
       default: return;
     }
   });

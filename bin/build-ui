@@ -9,7 +9,7 @@ out="${1:-$repo/calendar/templates/month.html}"
 export ZANNI_ASSETS="$zanni/assets"
 
 node "$zanni/bin/zanni-inline" \
-  --component boil --component gesso --component phosphor --component fontpack \
+  --component boil --component gesso --component phosphor --component fontpack --component scriba \
   "$repo/calendar/templates/month.html.in" -o "$out"
 node "$zanni/bin/zanni-check" "$out"
 node "$repo/bin/cal-check" "$out"
