@@ -29,13 +29,15 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/templates
-            cp calendar/gluck_calendar.py calendar/monthview.py $out/
+            cp calendar/gluck_calendar.py calendar/monthview.py calendar/notify.py $out/
             zanni-inline \
               --component boil --component gesso \
               --component phosphor --component fontpack \
               calendar/templates/month.html.in -o $out/templates/month.html
             zanni-check $out/templates/month.html
             node bin/cal-check $out/templates/month.html
+            ${pkgs.python3.withPackages (ps: [ ps.duckdb ps.requests ps.pytz ps.python-dateutil ])}/bin/python \
+              tests/test_notify.py
             runHook postInstall
           '';
         };
@@ -54,6 +56,52 @@
               type = lib.types.port;
               default = 9094;
               description = "Loopback port for the calendar API";
+            };
+
+            reminders = {
+              enable = lib.mkEnableOption "calendar reminders over herald";
+
+              secretFile = lib.mkOption {
+                type = lib.types.path;
+                description = ''
+                  Path to the kcal-notify OIDC client secret, delivered to the
+                  unit through LoadCredential. Normally a sops secret path.
+                '';
+              };
+
+              recipient = lib.mkOption {
+                type = lib.types.str;
+                default = "gluck";
+                description = "herald route name to deliver to.";
+              };
+
+              readAs = lib.mkOption {
+                type = lib.types.str;
+                default = "gluck";
+                description = ''
+                  Whose calendar is summarised. Events are read through the
+                  ordinary Read ACL for this username.
+                '';
+              };
+
+              heraldUrl = lib.mkOption {
+                type = lib.types.str;
+                default = "http://127.0.0.1:9098";
+              };
+
+              clientId = lib.mkOption {
+                type = lib.types.str;
+                default = "kcal-notify";
+              };
+
+              tickSeconds = lib.mkOption {
+                type = lib.types.ints.positive;
+                default = 60;
+                description = ''
+                  Seconds between evaluations. Reminder resolution equals this
+                  interval: see docs/ui.md and docs/notify.md.
+                '';
+              };
             };
 
             timeZone = lib.mkOption {
@@ -103,6 +151,16 @@
                 GLUCK_CALENDAR_DB = "/var/lib/gluck-calendar/calendar.duckdb";
                 GLUCK_CALENDAR_SERVICE_CLIENTS = builtins.toJSON cfg.serviceClients;
                 GLUCK_CALENDAR_TZ = cfg.timeZone;
+              }
+              // lib.optionalAttrs cfg.reminders.enable {
+                GLUCK_CALENDAR_NOTIFY_TO = cfg.reminders.recipient;
+                GLUCK_CALENDAR_NOTIFY_USER = cfg.reminders.readAs;
+                GLUCK_CALENDAR_NOTIFY_CLIENT_ID = cfg.reminders.clientId;
+                GLUCK_CALENDAR_NOTIFY_TICK = toString cfg.reminders.tickSeconds;
+                GLUCK_CALENDAR_HERALD_URL = cfg.reminders.heraldUrl;
+              };
+              extraServiceConfig = lib.optionalAttrs cfg.reminders.enable {
+                LoadCredential = "herald-client-secret:${cfg.reminders.secretFile}";
               };
               requireAuth = true;
               requiredGroups = [ "calendar-create" ];
