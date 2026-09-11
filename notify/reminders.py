@@ -1,4 +1,4 @@
-"""Reminder delivery over herald. See docs/notify.md."""
+"""Reminder logic: what is due, how it reads, and the ledger. See docs/notify.md."""
 
 import logging
 import os
@@ -34,6 +34,7 @@ class Config:
     client_secret: str
     token_url: str
     herald_url: str
+    calendar_url: str
     recipient: str
     user: str
     issuer: str = "https://auth.kelliher.info"
@@ -49,24 +50,25 @@ def config_from_env():
     if not secret:
         return None
     return Config(
-        client_id=os.environ.get("GLUCK_CALENDAR_NOTIFY_CLIENT_ID", "kcal-notify"),
+        client_id=os.environ.get("KCAL_NOTIFY_CLIENT_ID", "kcal-notify"),
         client_secret=secret,
         token_url=os.environ.get(
-            "GLUCK_CALENDAR_OIDC_TOKEN_URL", "http://127.0.0.1:9091/api/oidc/token"
+            "KCAL_NOTIFY_TOKEN_URL", "http://127.0.0.1:9091/api/oidc/token"
         ),
-        herald_url=os.environ.get("GLUCK_CALENDAR_HERALD_URL", "http://127.0.0.1:9098"),
-        issuer=os.environ.get("GLUCK_CALENDAR_OIDC_ISSUER", "https://auth.kelliher.info"),
-        recipient=os.environ.get("GLUCK_CALENDAR_NOTIFY_TO", "gluck"),
-        user=os.environ.get("GLUCK_CALENDAR_NOTIFY_USER", "gluck"),
-        tick_seconds=int(os.environ.get("GLUCK_CALENDAR_NOTIFY_TICK", "60")),
-        lead_minutes=int(os.environ.get("GLUCK_CALENDAR_NOTIFY_LEAD", "60")),
-        morning=_parse_clock(os.environ.get("GLUCK_CALENDAR_NOTIFY_MORNING", "08:00")),
-        evening=_parse_clock(os.environ.get("GLUCK_CALENDAR_NOTIFY_EVENING", "22:00")),
+        herald_url=os.environ.get("KCAL_NOTIFY_HERALD_URL", "http://127.0.0.1:9098"),
+        calendar_url=os.environ.get("KCAL_NOTIFY_CALENDAR_URL", "http://127.0.0.1:9094"),
+        issuer=os.environ.get("KCAL_NOTIFY_ISSUER", "https://auth.kelliher.info"),
+        recipient=os.environ.get("KCAL_NOTIFY_TO", "gluck"),
+        user=os.environ.get("KCAL_NOTIFY_USER", "gluck"),
+        tick_seconds=int(os.environ.get("KCAL_NOTIFY_TICK", "60")),
+        lead_minutes=int(os.environ.get("KCAL_NOTIFY_LEAD", "60")),
+        morning=_parse_clock(os.environ.get("KCAL_NOTIFY_MORNING", "08:00")),
+        evening=_parse_clock(os.environ.get("KCAL_NOTIFY_EVENING", "22:00")),
     )
 
 
 def _read_secret():
-    explicit = os.environ.get("GLUCK_CALENDAR_NOTIFY_SECRET_FILE")
+    explicit = os.environ.get("KCAL_NOTIFY_SECRET_FILE")
     if not explicit:
         creds = os.environ.get("CREDENTIALS_DIRECTORY")
         explicit = os.path.join(creds, "herald-client-secret") if creds else None
@@ -195,7 +197,9 @@ def status_report(db, lock):
 
 
 # ── herald ────────────────────────────────────────────────────────────────
-class Herald:
+class Identity:
+    """The kcal-notify service identity: one token, two services."""
+
     def __init__(self, cfg):
         self.cfg = cfg
         self._token = None
@@ -228,20 +232,43 @@ class Herald:
             self._expires = time.time() + int(body.get("expires_in", 600)) - 60
             return self._token
 
-    def say(self, recipient, text):
+    def _call(self, method, url, what, **kw):
         for attempt in (1, 2):
-            res = requests.post(
-                self.cfg.herald_url.rstrip("/") + "/v1/say",
+            res = requests.request(
+                method, url,
                 headers={"Authorization": "Bearer " + self.token(force=attempt == 2)},
-                json={"to": recipient, "text": text},
-                timeout=30,
+                timeout=30, **kw
             )
             if res.status_code == 401 and attempt == 1:
                 continue
             if res.status_code != 200:
-                raise RuntimeError(f"herald {res.status_code}: {res.text[:300]}")
+                raise RuntimeError(f"{what} {res.status_code}: {res.text[:300]}")
             return res.json()
-        raise RuntimeError("herald refused the token twice")
+        raise RuntimeError(f"{what} refused the token twice")
+
+    def say(self, recipient, text):
+        return self._call("POST", self.cfg.herald_url.rstrip("/") + "/v1/say",
+                          "herald", json={"to": recipient, "text": text})
+
+    def events(self, window_from, window_to):
+        """Read the window from gluck-calendar over its API, as a service client."""
+        raw = self._call(
+            "GET", self.cfg.calendar_url.rstrip("/") + "/events", "calendar",
+            params={"from": window_from.isoformat(), "to": window_to.isoformat()},
+        )
+        out = []
+        for e in raw:
+            out.append({
+                "id": e["id"],
+                "uid": e["uid"],
+                "title": e["title"],
+                "location": e.get("location"),
+                "all_day": e["all_day"],
+                "recurring": e.get("recurring", False),
+                "start": datetime.fromisoformat(e["dtstart"]),
+                "end": datetime.fromisoformat(e["dtend"]) if e.get("dtend") else None,
+            })
+        return out
 
 
 # ── what is due ───────────────────────────────────────────────────────────
@@ -317,13 +344,13 @@ def lead_text(start, end, inst, now):
 
 
 # ── the tick ──────────────────────────────────────────────────────────────
-def tick(db, lock, read_instances, cfg, tz, herald, now):
+def tick(db, lock, cfg, tz, herald, now):
     """One evaluation of all three triggers. Returns a short summary string."""
     today = now.date()
     lead = timedelta(minutes=cfg.lead_minutes)
     window_from = datetime.combine(today, clock.min, tz) - timedelta(days=2)
     window_to = datetime.combine(today + timedelta(days=3), clock.min, tz)
-    instances = read_instances(cfg.user, window_from, window_to)
+    instances = herald.events(window_from, window_to)
 
     reap(db, lock, now)
     done = []
@@ -385,38 +412,3 @@ def _deliver(db, lock, cfg, herald, kind, key, text, now):
     settle(db, lock, kind, key, cfg.recipient, "sent", now)
     log.info("%s for %s delivered to %s", kind, key, cfg.recipient)
     return "sent"
-
-
-# ── the thread ────────────────────────────────────────────────────────────
-def run_forever(db, lock, read_instances, cfg, tz, herald=None, stop=None):
-    ensure_schema(db, lock)
-    herald = herald or Herald(cfg)
-    log.info(
-        "reminders: every %ds, digests %s and %s, %dm lead, to %s as %s",
-        cfg.tick_seconds, cfg.morning.strftime("%H:%M"),
-        cfg.evening.strftime("%H:%M"), cfg.lead_minutes, cfg.recipient, cfg.user,
-    )
-    while not (stop and stop.is_set()):
-        try:
-            now = datetime.now(tz)
-            summary = tick(db, lock, read_instances, cfg, tz, herald, now)
-            heartbeat(db, lock, summary, now)
-        except Exception:  # noqa: BLE001
-            log.exception("reminder tick failed")
-            try:
-                heartbeat(db, lock, "tick raised; see the journal", datetime.now(tz))
-            except Exception:  # noqa: BLE001
-                pass
-        if stop:
-            stop.wait(cfg.tick_seconds)
-        else:
-            time.sleep(cfg.tick_seconds)
-
-
-def start(db, lock, read_instances, cfg, tz):
-    thread = threading.Thread(
-        target=run_forever, args=(db, lock, read_instances, cfg, tz),
-        name="reminders", daemon=True,
-    )
-    thread.start()
-    return thread

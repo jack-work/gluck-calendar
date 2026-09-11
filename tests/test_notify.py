@@ -10,21 +10,27 @@ import threading
 from datetime import date, datetime, time as clock, timedelta
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "notify"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "calendar"))
 
 import duckdb  # noqa: E402
-import notify  # noqa: E402
+import reminders as notify  # noqa: E402
 
 TZ = ZoneInfo("America/New_York")
 DAY = date(2026, 9, 11)
 
 
-class FakeHerald:
-    """Stands in for the token endpoint and /v1/say together."""
+class FakeIdentity:
+    """Stands in for the token endpoint, the calendar API and /v1/say."""
 
-    def __init__(self):
+    def __init__(self, events=()):
         self.sent = []
         self.fail_with = None
+        self._events = list(events)
+
+    def events(self, window_from, window_to):
+        return [e for e in self._events
+                if window_from <= (e["end"] or e["start"]) and e["start"] <= window_to]
 
     def say(self, recipient, text):
         if self.fail_with:
@@ -52,17 +58,13 @@ def harness(events):
     cfg = notify.Config(
         client_id="kcal-notify", client_secret="x",
         token_url="http://unused", herald_url="http://unused",
+        calendar_url="http://unused",
         recipient="gluck", user="gluck", tick_seconds=60, lead_minutes=60,
     )
-    herald = FakeHerald()
-
-    def read_instances(user, window_from, window_to):
-        assert user == "gluck"
-        return [e for e in events
-                if window_from <= (e["end"] or e["start"]) and e["start"] <= window_to]
+    herald = FakeIdentity(events)
 
     def run(now):
-        return notify.tick(db, lock, read_instances, cfg, TZ, herald, now)
+        return notify.tick(db, lock, cfg, TZ, herald, now)
 
     return db, lock, cfg, herald, run
 
@@ -111,11 +113,8 @@ def _():
     run(at(8, 0))
     assert len([t for _, t in herald.sent if t.startswith("**Today")]) == 1, herald.sent
     # a fresh tick with a fresh Herald, as after a deploy at 08:00:30
-    herald2 = FakeHerald()
-
-    def read_instances(user, a, b):
-        return events
-    notify.tick(db, lock, read_instances, cfg, TZ, herald2, at(8, 0, DAY))
+    herald2 = FakeIdentity(events)
+    notify.tick(db, lock, cfg, TZ, herald2, at(8, 0, DAY))
     assert herald2.sent == [], "a restart resent the day"
 
 
@@ -327,10 +326,10 @@ def _():
 
     cfg = notify.Config(
         client_id="kcal-notify", client_secret="s3cret",
-        token_url=base + "/api/oidc/token", herald_url=base,
+        token_url=base + "/api/oidc/token", herald_url=base, calendar_url=base,
         recipient="gluck", user="gluck",
     )
-    herald = notify.Herald(cfg)
+    herald = notify.Identity(cfg)
     herald.say("gluck", "hello")
     assert state["tokens"] == 2, f"did not remint after 401: {state}"
     assert state["says"] == [{"to": "gluck", "text": "hello"}], state["says"]
@@ -343,9 +342,10 @@ def _():
     # herald refusing outright surfaces as an exception, not a silent drop
     cfg2 = notify.Config(client_id="c", client_secret="s",
                          token_url=base + "/api/oidc/token",
-                         herald_url=base + "/missing", recipient="gluck", user="gluck")
+                         herald_url=base + "/missing", calendar_url=base,
+                         recipient="gluck", user="gluck")
     try:
-        notify.Herald(cfg2).say("gluck", "x")
+        notify.Identity(cfg2).say("gluck", "x")
         raise AssertionError("a 404 from herald was swallowed")
     except RuntimeError as exc:
         assert "404" in str(exc), exc
@@ -383,10 +383,68 @@ def _():
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     cfg = notify.Config(client_id="kcal-notify", client_secret="s",
                         token_url=base + "/api/oidc/token", herald_url=base,
-                        recipient="gluck", user="gluck",
+                        calendar_url=base, recipient="gluck", user="gluck",
                         issuer="https://auth.kelliher.info")
-    notify.Herald(cfg).say("gluck", "x")
+    notify.Identity(cfg).say("gluck", "x")
     assert seen == {"proto": "https", "host": "auth.kelliher.info"}, seen
+    srv.shutdown()
+
+
+@check("events are read from the calendar API and mapped, with the window passed through")
+def _():
+    import http.server
+    import json
+    import threading as th
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, body):
+            raw = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            seen["path"] = self.path
+            seen["auth"] = self.headers.get("Authorization")
+            self._send([
+                {"id": 1, "uid": "a@cal", "title": "Standup", "location": None,
+                 "all_day": False, "recurring": True,
+                 "dtstart": "2026-09-11T09:00:00-04:00",
+                 "dtend": "2026-09-11T09:15:00-04:00"},
+                {"id": 2, "uid": "b@cal", "title": "Birthday", "location": None,
+                 "all_day": True, "recurring": False,
+                 "dtstart": "2026-09-11T00:00:00-04:00", "dtend": None},
+            ])
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self._send({"access_token": "tok", "expires_in": 600})
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    cfg = notify.Config(client_id="kcal-notify", client_secret="s",
+                        token_url=base + "/api/oidc/token", herald_url=base,
+                        calendar_url=base, recipient="gluck", user="gluck")
+    got = notify.Identity(cfg).events(at(0), at(23, 59))
+
+    assert seen["auth"] == "Bearer tok", seen
+    assert "/events?" in seen["path"] and "from=" in seen["path"] and "to=" in seen["path"], seen
+    assert [e["title"] for e in got] == ["Standup", "Birthday"], got
+    assert got[0]["start"] == at(9), got[0]
+    assert got[0]["end"] == at(9, 15) and got[0]["recurring"] is True, got[0]
+    assert got[1]["all_day"] is True and got[1]["end"] is None, got[1]
+    # and the mapped shape feeds the triggers unchanged
+    spanning, timed = notify.day_items(got, DAY, TZ)
+    assert [i[2]["title"] for i in spanning] == ["Birthday"], spanning
+    assert [i[2]["title"] for i in timed] == ["Standup"], timed
     srv.shutdown()
 
 

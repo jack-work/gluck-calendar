@@ -26,7 +26,6 @@ from zoneinfo import ZoneInfo
 import duckdb
 import jwt
 import monthview
-import notify
 import requests
 from dateutil.rrule import rrulestr
 from flask import Flask, jsonify, redirect, render_template, request
@@ -622,27 +621,6 @@ def health():
     return jsonify(status="ok")
 
 
-@app.get("/notify/status")
-def notify_status():
-    if not caller():
-        return jsonify(error="unauthenticated"), 401
-    if NOTIFY_CONFIG is None:
-        return jsonify(enabled=False, reason="no herald credential is configured")
-    report = notify.status_report(db, db_lock)
-    report["enabled"] = True
-    report["alive"] = bool(NOTIFY_THREAD and NOTIFY_THREAD.is_alive())
-    report["recipient"] = NOTIFY_CONFIG.recipient
-    report["reads_as"] = NOTIFY_CONFIG.user
-    report["tick_seconds"] = NOTIFY_CONFIG.tick_seconds
-    report["timezone"] = str(DISPLAY_TZ)
-    return jsonify(report)
-
-
-@app.get("/whoami")
-def whoami():
-    return jsonify(user=caller(), groups=caller_groups())
-
-
 @app.post("/events")
 def create_event():
     user = caller()
@@ -832,24 +810,7 @@ def share_event(event_id):
         return jsonify(event_id=event_id, username=grantee, permissions=permissions)
 
 
-NOTIFY_CONFIG = notify.config_from_env()
-NOTIFY_THREAD = None
-
-
-def start_reminders():
-    global NOTIFY_THREAD
-    if NOTIFY_CONFIG is None:
-        app.logger.info("reminders disabled: no herald credential")
-        return None
-    NOTIFY_THREAD = notify.start(db, db_lock, read_instances, NOTIFY_CONFIG, DISPLAY_TZ)
-    return NOTIFY_THREAD
-
-
 if __name__ == "__main__":
-    import logging
-
     from waitress import serve
 
-    logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
-    start_reminders()
     serve(app, host="127.0.0.1", port=PORT, threads=4)

@@ -13,6 +13,25 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
 
+      # docs/notify.md
+      mkNotify =
+        pkgs:
+        pkgs.stdenv.mkDerivation {
+          pname = "kcal-notify";
+          version = "0.1.0";
+          src = ./.;
+          dontConfigure = true;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            cp notify/kcal_notify.py notify/reminders.py calendar/monthview.py $out/
+            ${pkgs.python3.withPackages (ps: [ ps.duckdb ps.requests ps.pytz ps.python-dateutil ])}/bin/python \
+              tests/test_notify.py
+            runHook postInstall
+          '';
+        };
+
       # docs/ui.md § Where the defs come from
       mkApp =
         pkgs:
@@ -29,17 +48,112 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/templates
-            cp calendar/gluck_calendar.py calendar/monthview.py calendar/notify.py $out/
+            cp calendar/gluck_calendar.py calendar/monthview.py $out/
             zanni-inline \
               --component boil --component gesso \
               --component phosphor --component fontpack \
               calendar/templates/month.html.in -o $out/templates/month.html
             zanni-check $out/templates/month.html
             node bin/cal-check $out/templates/month.html
-            ${pkgs.python3.withPackages (ps: [ ps.duckdb ps.requests ps.pytz ps.python-dateutil ])}/bin/python \
-              tests/test_notify.py
             runHook postInstall
           '';
+        };
+
+
+      # kcal-notify: the reminders, as their own unit. It reads the calendar
+      # over its HTTP API as a read-only service client and says to herald,
+      # so it shares no state with the web app and opens no database of the
+      # calendar's. docs/notify.md.
+      notifyModule =
+        { config, lib, pkgs, ... }:
+        let
+          cfg = config.services.kcal-notify;
+          app = mkNotify pkgs;
+          py = pkgs.python3.withPackages (ps: with ps; [ duckdb requests pytz python-dateutil ]);
+        in
+        {
+          options.services.kcal-notify = {
+            enable = lib.mkEnableOption "calendar reminders over herald";
+
+            secretFile = lib.mkOption {
+              type = lib.types.path;
+              description = ''
+                Path to the kcal-notify OIDC client secret. Delivered through
+                LoadCredential, never through the environment.
+              '';
+            };
+
+            recipient = lib.mkOption {
+              type = lib.types.str;
+              default = "gluck";
+              description = "herald route name to deliver to.";
+            };
+
+            readAs = lib.mkOption {
+              type = lib.types.str;
+              default = "gluck";
+              description = ''
+                Whose calendar is summarised. Must match the username this
+                client is mapped to in services.gluck-calendar.serviceClients.
+              '';
+            };
+
+            calendarUrl = lib.mkOption {
+              type = lib.types.str;
+              default = "http://127.0.0.1:9094";
+            };
+
+            heraldUrl = lib.mkOption {
+              type = lib.types.str;
+              default = "http://127.0.0.1:9098";
+            };
+
+            clientId = lib.mkOption {
+              type = lib.types.str;
+              default = "kcal-notify";
+            };
+
+            timeZone = lib.mkOption {
+              type = lib.types.str;
+              default = "America/New_York";
+            };
+
+            schedule = lib.mkOption {
+              type = lib.types.str;
+              default = "minutely";
+              description = ''
+                OnCalendar expression. Reminder resolution equals this
+                interval: a lead warning lands within one firing of T-60.
+              '';
+            };
+          };
+
+          config = lib.mkIf cfg.enable (
+            gluck-service-lib.lib.mkScheduledJob {
+              inherit config lib pkgs;
+              name = "kcal-notify";
+              description = "calendar reminders over herald";
+              schedule = cfg.schedule;
+              # A random delay would defeat the point: the resolution of every
+              # reminder is this timer.
+              randomizedDelaySec = "0";
+              accuracySec = "1s";
+              execStart = "${py}/bin/python ${app}/kcal_notify.py";
+              stateDirectory = "kcal-notify";
+              timeoutStartSec = "2m";
+              credentials.herald-client-secret = cfg.secretFile;
+              environment = {
+                KCAL_NOTIFY_DB = "/var/lib/kcal-notify/reminders.duckdb";
+                KCAL_NOTIFY_TZ = cfg.timeZone;
+                KCAL_NOTIFY_TO = cfg.recipient;
+                KCAL_NOTIFY_USER = cfg.readAs;
+                KCAL_NOTIFY_CLIENT_ID = cfg.clientId;
+                KCAL_NOTIFY_CALENDAR_URL = cfg.calendarUrl;
+                KCAL_NOTIFY_HERALD_URL = cfg.heraldUrl;
+              };
+              after = [ "gluck-calendar.service" "gluck-herald.service" ];
+            }
+          );
         };
 
       nixosModule =
@@ -56,52 +170,6 @@
               type = lib.types.port;
               default = 9094;
               description = "Loopback port for the calendar API";
-            };
-
-            reminders = {
-              enable = lib.mkEnableOption "calendar reminders over herald";
-
-              secretFile = lib.mkOption {
-                type = lib.types.path;
-                description = ''
-                  Path to the kcal-notify OIDC client secret, delivered to the
-                  unit through LoadCredential. Normally a sops secret path.
-                '';
-              };
-
-              recipient = lib.mkOption {
-                type = lib.types.str;
-                default = "gluck";
-                description = "herald route name to deliver to.";
-              };
-
-              readAs = lib.mkOption {
-                type = lib.types.str;
-                default = "gluck";
-                description = ''
-                  Whose calendar is summarised. Events are read through the
-                  ordinary Read ACL for this username.
-                '';
-              };
-
-              heraldUrl = lib.mkOption {
-                type = lib.types.str;
-                default = "http://127.0.0.1:9098";
-              };
-
-              clientId = lib.mkOption {
-                type = lib.types.str;
-                default = "kcal-notify";
-              };
-
-              tickSeconds = lib.mkOption {
-                type = lib.types.ints.positive;
-                default = 60;
-                description = ''
-                  Seconds between evaluations. Reminder resolution equals this
-                  interval: see docs/ui.md and docs/notify.md.
-                '';
-              };
             };
 
             timeZone = lib.mkOption {
@@ -151,16 +219,6 @@
                 GLUCK_CALENDAR_DB = "/var/lib/gluck-calendar/calendar.duckdb";
                 GLUCK_CALENDAR_SERVICE_CLIENTS = builtins.toJSON cfg.serviceClients;
                 GLUCK_CALENDAR_TZ = cfg.timeZone;
-              }
-              // lib.optionalAttrs cfg.reminders.enable {
-                GLUCK_CALENDAR_NOTIFY_TO = cfg.reminders.recipient;
-                GLUCK_CALENDAR_NOTIFY_USER = cfg.reminders.readAs;
-                GLUCK_CALENDAR_NOTIFY_CLIENT_ID = cfg.reminders.clientId;
-                GLUCK_CALENDAR_NOTIFY_TICK = toString cfg.reminders.tickSeconds;
-                GLUCK_CALENDAR_HERALD_URL = cfg.reminders.heraldUrl;
-              };
-              extraServiceConfig = lib.optionalAttrs cfg.reminders.enable {
-                LoadCredential = "herald-client-secret:${cfg.reminders.secretFile}";
               };
               requireAuth = true;
               requiredGroups = [ "calendar-create" ];
@@ -170,13 +228,20 @@
     in
     {
       nixosModules.default = nixosModule;
+      nixosModules.notify = notifyModule;
 
       packages = nixpkgs.lib.genAttrs systems (
-        system: { default = mkApp nixpkgs.legacyPackages.${system}; }
+        system: {
+          default = mkApp nixpkgs.legacyPackages.${system};
+          notify = mkNotify nixpkgs.legacyPackages.${system};
+        }
       );
 
       checks = nixpkgs.lib.genAttrs systems (
-        system: { ui = mkApp nixpkgs.legacyPackages.${system}; }
+        system: {
+          ui = mkApp nixpkgs.legacyPackages.${system};
+          notify = mkNotify nixpkgs.legacyPackages.${system};
+        }
       );
     };
 }

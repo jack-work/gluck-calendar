@@ -1,9 +1,9 @@
 ---
 name: calendar-reminders
-description: How gluck-calendar delivers reminders to Telegram through herald, and why the notifier is a thread rather than a systemd timer. Read before changing calendar/notify.py, adding a trigger, debugging a missing or duplicated reminder, or wondering why nothing on spain shows up in systemctl list-timers.
+description: How kcal-notify delivers calendar reminders to Telegram through herald, and why it is an independent unit reading the calendar over HTTP rather than opening its database. Read before changing notify/reminders.py, adding a trigger, debugging a missing or duplicated reminder, or wiring another service to gluck-calendar's data.
 ---
 
-# Reminders
+# kcal-notify
 
 Three triggers, delivered to Telegram through herald.
 
@@ -16,11 +16,24 @@ Three triggers, delivered to Telegram through herald.
 All-day events appear in both digests and never raise a lead warning, because
 they have no start time to be an hour before.
 
-## The storage fact that shapes everything
+## The shape
+
+`kcal-notify` is its own systemd unit with its own state directory. It reads
+the calendar over HTTP and says to herald over HTTP, and shares nothing with
+either process.
+
+```
+kcal-notify.timer ──▶ kcal-notify.service
+                        │  GET  /events      gluck-calendar :9094  (read-only service client)
+                        │  POST /v1/say      gluck-herald   :9098  (role: say)
+                        └─ ledger            /var/lib/kcal-notify/reminders.duckdb
+```
+
+## The storage fact that made it this shape
 
 **DuckDB refuses a second process, even read-only, while another holds the
-file.** gluck-calendar's Flask app holds it open for the life of the unit, so
-nothing else on the box can open `calendar.duckdb` at all:
+file.** gluck-calendar's Flask app holds `calendar.duckdb` open for the life of
+the unit, so nothing else on the box can open it at all:
 
 ```
 writer holds the file (as the Flask app does)
@@ -29,27 +42,25 @@ writer holds the file (as the Flask app does)
 ```
 
 This is a fact about gluck-calendar's storage, not about reminders. Any future
-work that wants this data from outside the web process has three options and
+work that wants that data from outside the web process has three options and
 only three: run inside the process, go through the HTTP API, or move off
-DuckDB. A `mkScheduledJob` oneshot touching the database directly cannot work
-and will fail on every fire.
+DuckDB. **This service takes the second.** A unit that opened
+`calendar.duckdb` directly would fail on every fire.
 
-That is why the notifier is a thread inside the Flask process, started from
-`__main__`, and why there is **no timer in `systemctl list-timers`**. Looking
-for one and finding nothing is expected.
+## Observability
 
-## Observability, since there is no timer
+| want | run |
+|---|---|
+| is it firing | `systemctl list-timers kcal-notify.timer` |
+| what did it do | `journalctl -u kcal-notify` |
+| what does the ledger say | `kcal-notify status` (JSON: heartbeat, counts, recent, unhealthy) |
 
-`GET /notify/status` reports the last tick, whether the thread is alive, counts
-by kind and status, the ten most recent rows, and how many are unhealthy. It is
-reachable with an Authelia session or a bearer token, so an aria can check it.
-
-Every tick also writes a heartbeat row and a journald line. The tick loop body
-catches everything, so no single failure can kill the loop.
+Each pass writes a heartbeat and one journald line. A pass that raises exits
+non-zero, so a failing timer is visible to systemd rather than silent.
 
 ## The ledger
 
-One table, `reminder_sent`, in the database the calendar already owns.
+One table, `reminder_sent`, in this service's own database.
 
 | column | carries |
 |---|---|
@@ -68,19 +79,17 @@ are different rows. For a digest it is the date the digest is about.
 **The constraint is the concurrency control.** The claim is one statement,
 `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING`, and a caller owns
 the send only if a row comes back. There is no select-then-insert gap. Today
-waitress runs one process with four threads and a single ticker, so nothing
-races; if anyone ever moves to multiple workers, the extra tickers degrade into
-a harmless lost race instead of into N copies of every reminder.
+systemd will not start a second pass while one is running, so nothing races; if
+a pass ever overruns its interval, the overlap degrades into a harmless lost
+race instead of into two copies of every reminder.
 
 **One clock.** Every ledger write takes the caller's `now` rather than calling
 SQL `now()`. Mixing the two made the stale-claim comparison compare a simulated
 clock against a wall clock, which was invisible in production and caught by a
 test. Do not reintroduce `now()` in a statement.
 
-The tick thread shares the app's single connection and takes `db_lock` exactly
-as request handlers do. It claims under the lock, releases, sends, then takes
-the lock again to record the result: holding it across a call to herald would
-stall the web UI for the duration.
+Each pass claims, releases, sends, then records the result. The lock is never
+held across a call to herald or to the calendar.
 
 ## Failure
 
@@ -111,19 +120,23 @@ scheduled time is the new day's 22:00 and `now` is before it.
 
 ## Resolution
 
-Reminder resolution equals the tick interval, `tickSeconds`, default 60. A lead
-warning lands within one tick of T-60, never before it. Polling is deliberate:
-per-event timers would be stateful and would fail silently whenever the run
-that should have armed them was missed.
+Reminder resolution equals the timer interval, `services.kcal-notify.schedule`,
+default `minutely`. A lead warning lands within one firing of T-60, never
+before it. Polling is deliberate: per-event timers would be stateful and would
+fail silently whenever the run that should have armed them was missed.
 
 ## The credential
 
 One machine credential, write-only, and no calendar OIDC client at all: the
 notifier reads its own database directly.
 
+One identity, one token, two services: it reads the calendar and says to
+herald with the same credential.
+
 | piece | where |
 |---|---|
 | client | Authelia `kcal-notify`, confidential, `client_credentials`, `one_factor` |
+| calendar access | `services.gluck-calendar.serviceClients.kcal-notify = "gluck"`, which is **read-only, enforced before routing**: any method but GET or HEAD is refused |
 | digest | inline in spain-flake `identity.nix`, on the `kmatrix` pattern |
 | plaintext | sops `secrets/identity.yaml` |
 | delivery | systemd `LoadCredential`, read from `$CREDENTIALS_DIRECTORY` |
@@ -139,12 +152,12 @@ unexplained.
 `one_factor` is not a weakening: `client_credentials` has no user, so there is
 no second factor it could apply to.
 
-If the secret is absent the notifier does not start and says so in the journal;
-the web view is unaffected.
+If the secret is absent the unit exits non-zero and says so in the journal. The
+calendar is unaffected either way: it does not know this service exists.
 
 ## Changing a trigger
 
-`calendar/notify.py` holds the triggers; `tests/test_notify.py` runs in the Nix
+`notify/reminders.py` holds the triggers; `tests/test_notify.py` runs in the Nix
 build against a fake token endpoint and a fake herald, with a simulated clock.
 Add the test first: every rule in the two tables above has one, including the
 ones about lateness and about not resending after a restart.
