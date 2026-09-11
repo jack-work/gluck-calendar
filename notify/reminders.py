@@ -356,7 +356,8 @@ def tick(db, lock, cfg, tz, herald, now):
     done = []
     done += _digests(db, lock, cfg, tz, herald, now, today, instances)
     done += _leads(db, lock, cfg, tz, herald, now, instances, lead)
-    return f"{len(instances)} instances in window; " + (", ".join(done) or "nothing due")
+    return (f"{len(instances)} instances in window as {cfg.user}; "
+            + (", ".join(done) or "nothing due"))
 
 
 def _digests(db, lock, cfg, tz, herald, now, today, instances):

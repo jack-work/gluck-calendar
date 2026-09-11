@@ -136,7 +136,7 @@ herald with the same credential.
 | piece | where |
 |---|---|
 | client | Authelia `kcal-notify`, confidential, `client_credentials`, `one_factor` |
-| calendar access | `services.gluck-calendar.serviceClients.kcal-notify = "gluck"`, which is **read-only, enforced before routing**: any method but GET or HEAD is refused |
+| calendar access | `services.gluck-calendar.serviceClients.kcal-notify = "<user>"`, **read-only, enforced before routing**: any method but GET or HEAD is refused |
 | digest | inline in spain-flake `identity.nix`, on the `kmatrix` pattern |
 | plaintext | sops `secrets/identity.yaml` |
 | delivery | systemd `LoadCredential`, read from `$CREDENTIALS_DIRECTORY` |
@@ -154,6 +154,24 @@ no second factor it could apply to.
 
 If the secret is absent the unit exits non-zero and says so in the journal. The
 calendar is unaffected either way: it does not know this service exists.
+
+## Two names that are not the same name
+
+`readAs` is a **calendar** username: whose events are summarised, matched
+against the `acl` table. `recipient` is a **herald route** name: where the
+message goes. They look alike and mean different things.
+
+On spain both the events and their ACL rows belong to `admin`, so `readAs` is
+`admin` while `recipient` is `gluck`. Setting `readAs` to a user with no ACL
+rows is silent: the API returns `[]` and every digest is correctly `empty`. A
+misconfigured username and an empty calendar look identical from outside, which
+is why each pass logs the name it read as:
+
+```
+INFO 4 instances in window as admin; nothing due
+```
+
+If that count is always zero, check the name before suspecting the triggers.
 
 ## Changing a trigger
 
