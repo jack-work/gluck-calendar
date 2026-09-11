@@ -87,6 +87,26 @@ check('it degrades to text when the renderer is absent',
 check('the pane wears the hand before scripts run',
   /class="prose scriba"/.test(bare));
 
+/* Editing. */
+console.log('[edit] the modal can change things');
+check('there is an edit form and a way into it',
+  /id="tpl-edit"/.test(bare) && /data-edit/.test(bare));
+check('it saves with PUT, not by recreating the event',
+  /method: 'PUT'/.test(bare) && /\/events\/' \+ e\.id/.test(bare));
+/* datetime-local speaks local wall time with no zone, so slicing an ISO
+   string silently shifts an event by the offset. */
+check('an ISO time is converted for the field, not sliced',
+  /function toLocalField/.test(bare) && !/dtstart\.slice\(0, 16\)/.test(bare));
+check('a refused edit says so rather than failing quietly',
+  /res\.status === 403/.test(bare));
+check('the description is a stilo surface in both forms',
+  (bare.match(/data-stilo/g) || []).length >= 2);
+/* Templates are cloned after load, so the document sweep has already run. */
+check('surfaces inside a cloned template are attached',
+  /zanni\.stilo\.auto\(sheet\)/.test(bare));
+check('what is stored is the source, not the rendered html',
+  /description: form\.elements\.description\.value/.test(bare));
+
 /* The floor. */
 console.log('[floor] accessibility and motion');
 check('the grid is announced as a grid', /role="grid"/.test(bare) && /role="gridcell"/.test(bare));

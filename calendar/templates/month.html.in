@@ -620,6 +620,20 @@
 
   dialog .prose.scriba { --scriba-code-bg: var(--cal-chip); }
 
+  dialog .stilo {
+    --stilo-field: var(--cal-chip);
+    --scriba-code-bg: var(--cal-ground-2);
+    --stilo-min: 8rem;
+    border-color: var(--cal-rule);
+  }
+
+  dialog .stilo-tab { color: var(--cal-muted); }
+  dialog .stilo-tab:hover,
+  dialog .stilo-tab[aria-selected='true'] { color: var(--cal-ink); }
+  dialog .stilo-tab[aria-selected='true'] { border-bottom-color: var(--cal-focus); }
+  dialog .stilo-input { color: var(--cal-ink); }
+  dialog .stilo:focus-within { border-color: var(--cal-focus); }
+
   dialog .fact {
     font-size: 0.95rem;
     color: var(--cal-muted);
@@ -683,6 +697,7 @@
 <!-- zanni:phosphor -->
 <!-- zanni:fontpack -->
 <!-- zanni:scriba -->
+<!-- zanni:stilo -->
 
 <div class="page">
 
@@ -823,7 +838,7 @@
     <label for="f-where">Location</label>
     <input id="f-where" name="location" type="text" autocomplete="off">
     <label for="f-note">Description</label>
-    <textarea id="f-note" name="description"></textarea>
+    <textarea id="f-note" name="description" data-stilo rows="5"></textarea>
     <label for="f-rrule">Repeats (RRULE)</label>
     <input id="f-rrule" name="rrule" type="text" placeholder="FREQ=WEEKLY;BYDAY=MO" autocomplete="off">
     <p class="fail" data-fail></p>
@@ -845,7 +860,31 @@
     <p class="fail" data-fail></p>
     <div class="actions">
       <button type="button" class="kill" data-delete>Delete</button>
+      <button type="button" data-edit>Edit</button>
       <button type="button" data-close>Close</button>
+    </div>
+  </form>
+</template>
+
+<template id="tpl-edit">
+  <form method="dialog">
+    <h2 class="fontpack-display">Edit event</h2>
+    <label for="g-title">Title</label>
+    <input id="g-title" name="title" type="text" required autocomplete="off">
+    <div class="row">
+      <div><label for="g-start">Starts</label><input id="g-start" name="dtstart" type="datetime-local" required></div>
+      <div><label for="g-end">Ends</label><input id="g-end" name="dtend" type="datetime-local"></div>
+    </div>
+    <label for="g-where">Location</label>
+    <input id="g-where" name="location" type="text" autocomplete="off">
+    <label for="g-note">Description</label>
+    <textarea id="g-note" name="description" data-stilo rows="6"></textarea>
+    <label for="g-rrule">Repeats (RRULE)</label>
+    <input id="g-rrule" name="rrule" type="text" placeholder="FREQ=WEEKLY;BYDAY=MO" autocomplete="off">
+    <p class="fail" data-fail></p>
+    <div class="actions">
+      <button type="button" data-back>Back</button>
+      <button type="submit" class="go">Save</button>
     </div>
   </form>
 </template>
@@ -864,6 +903,9 @@
       b.addEventListener('click', function () { sheet.close(); });
     });
     fill(form);
+    /* Templates are cloned after load, so the surfaces inside them were not
+       there when stilo swept the document. */
+    if (window.zanni && window.zanni.stilo) window.zanni.stilo.auto(sheet);
     sheet.showModal();
     var first = form.querySelector('input, button.go, button');
     if (first) first.focus();
@@ -902,6 +944,16 @@
       ev.preventDefault();
       submitNew(form);
     });
+  }
+
+  /* datetime-local speaks local wall time with no zone, so an ISO string
+     from the API has to be converted rather than sliced. */
+  function toLocalField(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
   function stamp(value) {
@@ -961,12 +1013,56 @@
       set(f, 'repeats', e.rrule ? 'Repeats: ' + e.rrule : null);
       set(f, 'origin', 'Created by ' + e.created_by + (e.source ? ' from ' + e.source : ''));
     });
+    form.querySelector('[data-edit]').addEventListener('click', function () { openEdit(e); });
     form.querySelector('[data-delete]').addEventListener('click', async function () {
       if (!window.confirm('Delete "' + e.title + '"?')) return;
       var del = await fetch('/events/' + id, { method: 'DELETE' });
       if (!del.ok) { fail(form, 'Could not delete: ' + del.status); return; }
       location.reload();
     });
+  }
+
+  /* ── edit ───────────────────────────────────────────────────────── */
+
+  function openEdit(e) {
+    var form = open('tpl-edit', function (f) {
+      f.elements.title.value = e.title || '';
+      f.elements.dtstart.value = toLocalField(e.dtstart);
+      f.elements.dtend.value = toLocalField(e.dtend);
+      f.elements.location.value = e.location || '';
+      f.elements.description.value = e.description || '';
+      f.elements.rrule.value = e.rrule || '';
+    });
+    form.querySelector('[data-back]').addEventListener('click', function () {
+      openEvent(e.id);
+    });
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      save(form, e);
+    });
+    /* Ctrl+Enter inside the surface commits, because the save button is
+       usually scrolled past by the time a description is worth saving. */
+    form.addEventListener('stilo:commit', function () { save(form, e); });
+  }
+
+  async function save(form, e) {
+    var body = {
+      title: form.elements.title.value.trim(),
+      dtstart: stamp(form.elements.dtstart.value),
+      dtend: stamp(form.elements.dtend.value),
+      location: form.elements.location.value.trim() || null,
+      description: form.elements.description.value.trim() || null,
+      rrule: form.elements.rrule.value.trim() || null
+    };
+    if (!body.title || !body.dtstart) { fail(form, 'A title and a start time are required.'); return; }
+    var res = await fetch('/events/' + e.id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (res.status === 403) { fail(form, 'You do not have permission to edit this event.'); return; }
+    if (!res.ok) { fail(form, 'Could not save: ' + res.status + ' ' + await res.text()); return; }
+    location.reload();
   }
 
   /* ── wiring ─────────────────────────────────────────────────────── */

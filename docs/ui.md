@@ -169,6 +169,26 @@ behaved before and what the live test now covers.
 Keys are inert while a field or a `contenteditable` has focus, so `hjkl` typed
 into the title box are letters.
 
+## Editing
+
+The view dialog has an **Edit** button which swaps in a form over the same
+`<dialog>`, saves with `PUT /events/<id>`, and reloads. **Back** returns to the
+view without saving.
+
+`datetime-local` speaks local wall time with no zone, so an ISO string from
+the API is converted rather than sliced; slicing shifts the event by the
+offset and looks right in one timezone only.
+
+The description is a `stilo` surface in both the create and edit forms:
+monospace Write tab, typeset Preview tab, `Ctrl+Enter` to save. What is stored
+is always the markdown source, never the rendered HTML.
+
+Templates are cloned after load, so `zanni.stilo.auto(sheet)` runs per dialog:
+the document-wide sweep happened before these textareas existed.
+
+A 403 is reported in the dialog. The API grants edit on the `Write`
+permission, which the creator holds.
+
 ## The details pane
 
 Descriptions are markdown, rendered by zanni's `scriba`: newlines preserved,

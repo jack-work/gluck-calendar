@@ -51,7 +51,8 @@
             cp calendar/gluck_calendar.py calendar/monthview.py $out/
             zanni-inline \
               --component boil --component gesso \
-              --component phosphor --component fontpack --component scriba \
+              --component phosphor --component fontpack \
+              --component scriba --component stilo \
               calendar/templates/month.html.in -o $out/templates/month.html
             zanni-check $out/templates/month.html
             node bin/cal-check $out/templates/month.html
