@@ -27,7 +27,9 @@ def open_ledger():
     parent = os.path.dirname(LEDGER)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    db = duckdb.connect(LEDGER)
+    # DuckDB sizes its buffer pool against total RAM by default, which on a
+    # 15 GB box meant a 1.5 GB peak every minute for a ledger of ~100 rows.
+    db = duckdb.connect(LEDGER, config={"memory_limit": "256MB", "threads": "2"})
     lock = threading.Lock()
     reminders.ensure_schema(db, lock)
     return db, lock
