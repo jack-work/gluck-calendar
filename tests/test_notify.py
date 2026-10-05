@@ -448,6 +448,124 @@ def _():
     srv.shutdown()
 
 
+# ── a dependency that is merely restarting must not fail the unit ──────────
+
+def _idp(handler_for):
+    """A throwaway HTTP server standing in for Authelia and the calendar."""
+    import http.server
+    import json
+    import threading as th
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _reply(self):
+            code, body = handler_for(self.path)
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        do_GET = do_POST = lambda self: (
+            self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)),
+            self._reply())[1]
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def _cfg(base):
+    return notify.Config(
+        client_id="kcal-notify", client_secret="s",
+        token_url=base + "/api/oidc/token", herald_url=base,
+        calendar_url=base, recipient="gluck", user="gluck")
+
+
+@check("Authelia refusing the connection skips the tick and exits 0")
+def _():
+    db, lock, cfg, _, _ = harness([])
+    # port 1 is closed: the same ConnectionError a restarting Authelia gives
+    dead = notify.Config(client_id="c", client_secret="s",
+                         token_url="http://127.0.0.1:1/api/oidc/token",
+                         herald_url="http://127.0.0.1:1", calendar_url="http://127.0.0.1:1",
+                         recipient="gluck", user="gluck")
+    code, summary = notify.run_once(db, lock, dead, TZ, notify.Identity(dead), at(11, 1))
+    assert code == 0, (code, summary)
+    assert summary.startswith("skipped:"), summary
+    assert "unreachable" in summary, summary
+
+
+@check("a 5xx from a dependency skips the tick too")
+def _():
+    srv, base = _idp(lambda p: (503, {"error": "restarting"}))
+    db, lock, cfg, _, _ = harness([])
+    cfg2 = _cfg(base)
+    code, summary = notify.run_once(db, lock, cfg2, TZ, notify.Identity(cfg2), at(11, 1))
+    assert code == 0 and summary.startswith("skipped:"), (code, summary)
+    srv.shutdown()
+
+
+@check("a skipped tick loses nothing: the next one delivers what was due")
+def _():
+    events = [event("a", "Lunch", at(12), at(13))]
+    db, lock, cfg, herald, run = harness(events)
+
+    dead = notify.Config(client_id="c", client_secret="s",
+                         token_url="http://127.0.0.1:1/api/oidc/token",
+                         herald_url="http://127.0.0.1:1", calendar_url="http://127.0.0.1:1",
+                         recipient="gluck", user="gluck")
+    code, _ = notify.run_once(db, lock, dead, TZ, notify.Identity(dead), at(11, 1))
+    assert code == 0
+    assert rows(db) == [], "a skipped tick claimed something"
+    assert herald.sent == []
+
+    # the next tick, a minute later, against a healthy dependency
+    code, summary = notify.run_once(db, lock, cfg, TZ, herald, at(11, 2))
+    assert code == 0, summary
+    assert len(herald.sent) == 1, herald.sent
+    assert rows(db, "lead")[0][2] == "sent", rows(db, "lead")
+
+
+@check("a 401 is permanent: the unit still fails loudly")
+def _():
+    srv, base = _idp(lambda p: (401, {"error": "invalid_client"}))
+    db, lock, cfg, _, _ = harness([])
+    cfg2 = _cfg(base)
+    code, summary = notify.run_once(db, lock, cfg2, TZ, notify.Identity(cfg2), at(11, 1))
+    assert code == 1, (code, summary)
+    assert "401" in summary, summary
+    srv.shutdown()
+
+
+@check("a malformed token response is permanent, not transient")
+def _():
+    srv, base = _idp(lambda p: (200, {"no_token_here": True}))
+    db, lock, cfg, _, _ = harness([])
+    cfg2 = _cfg(base)
+    code, summary = notify.run_once(db, lock, cfg2, TZ, notify.Identity(cfg2), at(11, 1))
+    assert code == 1, (code, summary)
+    assert "access_token" in summary, summary
+    srv.shutdown()
+
+
+@check("a missing credential is permanent: config_from_env yields nothing")
+def _():
+    import os as _os
+    keep = _os.environ.pop("CREDENTIALS_DIRECTORY", None)
+    keep2 = _os.environ.pop("KCAL_NOTIFY_SECRET_FILE", None)
+    try:
+        assert notify.config_from_env() is None
+    finally:
+        if keep:
+            _os.environ["CREDENTIALS_DIRECTORY"] = keep
+        if keep2:
+            _os.environ["KCAL_NOTIFY_SECRET_FILE"] = keep2
+
+
 def main():
     failed = 0
     for name, fn in CHECKS:

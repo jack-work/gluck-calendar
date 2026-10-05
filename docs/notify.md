@@ -104,6 +104,39 @@ reminder.
 An empty digest sends nothing and records `empty`, so it neither retries all
 day nor teaches him to ignore the 08:00 message.
 
+## A dependency restarting must not fail a deploy
+
+Found when an unrelated deploy that restarted Authelia was failed and rolled
+back by this unit. The timer fired inside the few seconds Authelia was down,
+the token fetch got connection refused, the job exited non-zero, and a failed
+unit during activation fails the whole deploy.
+
+The fix turns on **what has been claimed**:
+
+| failure | when | what happens |
+|---|---|---|
+| connection refused, timeout, 5xx | the preamble, before anything is claimed | skip the tick, one log line, **exit 0** |
+| 401, 403, malformed response, missing credential | anywhere | **exit non-zero**, loudly |
+| anything, during a claimed send | after the claim | ledger retries, then `gave-up` with an error line |
+
+Skipping is safe only because this is a poll over a ledger: nothing is claimed
+before the preamble, and the next tick re-evaluates the same window a minute
+later. Fail-closed is right for a delivery that has been claimed, where
+something can be lost. It is wrong for the token fetch at the top of a tick,
+where nothing can be lost and failing only damages whoever is deploying.
+
+`Restart=` is deliberately **not** the fix. A oneshot on a one-minute timer
+already has a retry mechanism, which is the timer, and `Restart=` on top of it
+makes the unit thrash during exactly the window it is trying to survive.
+Ordering on `authelia-main.service` is set as hygiene but does not cure it
+either: ordering governs startup, not a dependency restarting under a job that
+is already scheduled.
+
+**The general case.** Any frequent timer whose job depends on a service that
+deploys restart can fail activation this way. kcal-notify is the first one
+found on this estate, not necessarily the only one. The test is: would a
+missed run lose anything? If no, it should skip and exit 0.
+
 ## Lateness
 
 | situation | what happens |

@@ -13,6 +13,10 @@ from urllib.parse import urlsplit
 
 log = logging.getLogger("gluck_calendar.notify")
 
+
+class Transient(RuntimeError):
+    """A dependency is momentarily absent. Skip the tick; the next one re-evaluates."""
+
 DIGEST_TODAY = "digest-today"
 DIGEST_TOMORROW = "digest-tomorrow"
 LEAD = "lead"
@@ -218,32 +222,48 @@ class Identity:
         with self._lock:
             if not force and self._token and time.time() < self._expires:
                 return self._token
-            res = requests.post(
-                self.cfg.token_url,
-                auth=(self.cfg.client_id, self.cfg.client_secret),
-                data={"grant_type": "client_credentials"},
-                headers={"Accept": "application/json", **self._forwarded()},
-                timeout=15,
-            )
+            try:
+                res = requests.post(
+                    self.cfg.token_url,
+                    auth=(self.cfg.client_id, self.cfg.client_secret),
+                    data={"grant_type": "client_credentials"},
+                    headers={"Accept": "application/json", **self._forwarded()},
+                    timeout=15,
+                )
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                raise Transient(f"token endpoint unreachable: {type(exc).__name__}") from exc
+            if res.status_code >= 500:
+                raise Transient(f"token endpoint {res.status_code}")
             if res.status_code != 200:
                 raise RuntimeError(f"token endpoint {res.status_code}: {res.text[:300]}")
-            body = res.json()
-            self._token = body["access_token"]
+            try:
+                body = res.json()
+                self._token = body["access_token"]
+            except (ValueError, KeyError) as exc:
+                raise RuntimeError(f"token endpoint gave no access_token: {res.text[:200]}") from exc
             self._expires = time.time() + int(body.get("expires_in", 600)) - 60
             return self._token
 
     def _call(self, method, url, what, **kw):
         for attempt in (1, 2):
-            res = requests.request(
-                method, url,
-                headers={"Authorization": "Bearer " + self.token(force=attempt == 2)},
-                timeout=30, **kw
-            )
+            try:
+                res = requests.request(
+                    method, url,
+                    headers={"Authorization": "Bearer " + self.token(force=attempt == 2)},
+                    timeout=30, **kw
+                )
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                raise Transient(f"{what} unreachable: {type(exc).__name__}") from exc
             if res.status_code == 401 and attempt == 1:
                 continue
+            if res.status_code >= 500:
+                raise Transient(f"{what} {res.status_code}")
             if res.status_code != 200:
                 raise RuntimeError(f"{what} {res.status_code}: {res.text[:300]}")
-            return res.json()
+            try:
+                return res.json()
+            except ValueError as exc:
+                raise RuntimeError(f"{what} returned no json: {res.text[:200]}") from exc
         raise RuntimeError(f"{what} refused the token twice")
 
     def say(self, recipient, text):
@@ -344,6 +364,28 @@ def lead_text(start, end, inst, now):
 
 
 # ── the tick ──────────────────────────────────────────────────────────────
+def run_once(db, lock, cfg, tz, herald, now):
+    """One pass. Returns (exit_code, summary).
+
+    A dependency that is merely restarting must not fail the unit: this is a
+    poll, nothing is claimed before the preamble, and the next tick re-evaluates
+    the same window. See docs/notify.md.
+    """
+    try:
+        summary = tick(db, lock, cfg, tz, herald, now)
+    except Transient as exc:
+        summary = f"skipped: {exc}"
+        heartbeat(db, lock, summary, now)
+        log.info("%s", summary)
+        return 0, summary
+    except Exception as exc:  # noqa: BLE001
+        log.exception("reminder pass failed")
+        heartbeat(db, lock, f"pass raised: {type(exc).__name__}", now)
+        return 1, str(exc)
+    heartbeat(db, lock, summary, now)
+    return 0, summary
+
+
 def tick(db, lock, cfg, tz, herald, now):
     """One evaluation of all three triggers. Returns a short summary string."""
     today = now.date()

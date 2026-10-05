@@ -52,16 +52,10 @@ def main(argv):
         return 0
 
     identity = reminders.Identity(cfg)
-    now = datetime.now(TZ)
-    try:
-        summary = reminders.tick(db, lock, cfg, TZ, identity, now)
-    except Exception:  # noqa: BLE001
-        log.exception("reminder pass failed")
-        reminders.heartbeat(db, lock, "pass raised; see the journal", now)
-        return 1
-    reminders.heartbeat(db, lock, summary, now)
-    log.info("%s", summary)
-    return 0
+    code, summary = reminders.run_once(db, lock, cfg, TZ, identity, datetime.now(TZ))
+    if code == 0 and not summary.startswith("skipped:"):
+        log.info("%s", summary)
+    return code
 
 
 if __name__ == "__main__":

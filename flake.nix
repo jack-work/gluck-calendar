@@ -155,7 +155,10 @@
                 KCAL_NOTIFY_CALENDAR_URL = cfg.calendarUrl;
                 KCAL_NOTIFY_HERALD_URL = cfg.heraldUrl;
               };
-              after = [ "gluck-calendar.service" "gluck-herald.service" ];
+              # Ordering is hygiene, not the fix: it governs startup, not a
+              # dependency restarting under an already-scheduled job. The job
+              # survives that by skipping the tick. docs/notify.md.
+              after = [ "gluck-calendar.service" "gluck-herald.service" "authelia-main.service" ];
             }
           );
         };
