@@ -49,12 +49,14 @@ def main(argv):
                       timezone=str(TZ))
         json.dump(report, sys.stdout, indent=1)
         sys.stdout.write("\n")
+        reminders.close(db, lock)
         return 0
 
     identity = reminders.Identity(cfg)
     code, summary = reminders.run_once(db, lock, cfg, TZ, identity, datetime.now(TZ))
     if code == 0 and not summary.startswith("skipped:"):
         log.info("%s", summary)
+    reminders.close(db, lock)
     return code
 
 

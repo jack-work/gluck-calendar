@@ -167,9 +167,22 @@ def settle(db, lock, kind, key, recipient, status, now, detail=None):
 
 def heartbeat(db, lock, detail, now):
     with lock:
-        db.execute("DELETE FROM notify_heartbeat WHERE id = 1")
-        db.execute("INSERT INTO notify_heartbeat (id, beat_at, detail) VALUES (1, ?, ?)",
-                   [now, detail])
+        db.execute(
+            """INSERT INTO notify_heartbeat (id, beat_at, detail) VALUES (1, ?, ?)
+               ON CONFLICT (id) DO UPDATE
+                 SET beat_at = excluded.beat_at, detail = excluded.detail""",
+            [now, detail],
+        )
+
+
+def close(db, lock):
+    """Checkpoint and close. Without this the file grows every pass forever."""
+    with lock:
+        try:
+            db.execute("CHECKPOINT")
+        except Exception:  # noqa: BLE001
+            log.warning("checkpoint failed", exc_info=True)
+        db.close()
 
 
 def status_report(db, lock):

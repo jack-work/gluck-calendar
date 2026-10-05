@@ -137,6 +137,29 @@ deploys restart can fail activation this way. kcal-notify is the first one
 found on this estate, not necessarily the only one. The test is: would a
 missed run lose anything? If no, it should skip and exit 0.
 
+## The ledger must be checkpointed, and it is a few rows
+
+Found at 9.2 GB on spain, growing **exactly 256 KiB every tick**, about 360 MiB
+a day, with each pass peaking at 1.5 GB of RAM and four seconds of CPU to
+replay it. For a table holding three rows.
+
+Two causes, both fixed:
+
+| cause | fix |
+|---|---|
+| the heartbeat was `DELETE` then `INSERT` every pass | one `INSERT ... ON CONFLICT DO UPDATE` |
+| the process exited without closing, so DuckDB never checkpointed | `CHECKPOINT` then `close()` before exit |
+
+It did not reproduce on DuckDB 1.5.5 and did reproduce on the 1.4.4 that spain
+runs, so do not assume a newer library makes this safe. `tests/test_notify.py`
+asserts the invariant across separate processes, which is the only way it shows
+up: sixty passes must not add megabytes.
+
+**The general shape.** A short-lived process that opens an embedded database
+every minute and exits without closing it will grow that file forever. The
+symptom appears first as memory and CPU, not as disk, because the whole file is
+replayed on open.
+
 ## Lateness
 
 | situation | what happens |

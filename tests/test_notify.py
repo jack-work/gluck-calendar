@@ -566,6 +566,50 @@ def _():
             _os.environ["KCAL_NOTIFY_SECRET_FILE"] = keep2
 
 
+@check("the ledger does not grow without bound: it is a few rows, not a log")
+def _():
+    import subprocess
+    import tempfile as tf
+
+    # Separate processes, as the timer does, because the growth only appears
+    # across open/close cycles. On spain this grew exactly 256 KiB per tick,
+    # about 360 MiB a day, until it reached 9.2 GB.
+    workdir = tf.mkdtemp()
+    ledger = os.path.join(workdir, "ledger.duckdb")
+    script = os.path.join(workdir, "tick.py")
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(script, "w") as fh:
+        fh.write(
+            "import sys, threading\n"
+            f"sys.path.insert(0, {os.path.join(here, '..', 'notify')!r})\n"
+            f"sys.path.insert(0, {os.path.join(here, '..', 'calendar')!r})\n"
+            "import duckdb, reminders\n"
+            "from datetime import datetime, timezone\n"
+            f"db = duckdb.connect({ledger!r})\n"
+            "lock = threading.Lock()\n"
+            "reminders.ensure_schema(db, lock)\n"
+            "now = datetime.now(timezone.utc)\n"
+            "reminders.reap(db, lock, now)\n"
+            "reminders.heartbeat(db, lock, 'tick', now)\n"
+            "reminders.close(db, lock)\n"
+        )
+
+    def run(n):
+        for _ in range(n):
+            r = subprocess.run([sys.executable, script], capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr[-400:]
+        return os.path.getsize(ledger)
+
+    after20 = run(20)
+    after60 = run(40)
+    grew = after60 - after20
+    # 40 more passes writing one heartbeat row each must not add megabytes.
+    assert grew < 2_000_000, (
+        f"ledger grew {grew} bytes over 40 passes "
+        f"({after20} -> {after60}); it is accumulating rather than checkpointing")
+    assert after60 < 50_000_000, f"ledger is {after60} bytes for a handful of rows"
+
+
 def main():
     failed = 0
     for name, fn in CHECKS:
