@@ -186,8 +186,13 @@ fail silently whenever the run that should have armed them was missed.
 One machine credential, write-only, and no calendar OIDC client at all: the
 notifier reads its own database directly.
 
-One identity, one token, two services: it reads the calendar and says to
-herald with the same credential.
+One identity, one token per service. The client is configured with both
+audiences and `requested_audience_mode: explicit`, and the notifier asks for
+one audience per token, so the calendar's token names only the calendar and
+herald's only herald. Each backend refuses a service token whose `aud` is not
+exactly its own, so neither token opens the other service. Under `implicit`,
+Authelia 4.39.12 grants every allowed audience to a request that names none,
+which would mint a token both accept; measured on the deployed build.
 
 | piece | where |
 |---|---|

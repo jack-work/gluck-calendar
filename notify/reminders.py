@@ -42,6 +42,10 @@ class Config:
     recipient: str
     user: str
     issuer: str = "https://auth.kelliher.info"
+    calendar_audience: str = ""
+    herald_audience: str = ""
+    calendar_host: str = ""
+    herald_host: str = ""
     tick_seconds: int = 60
     lead_minutes: int = 60
     morning: clock = clock(8, 0)
@@ -62,6 +66,10 @@ def config_from_env():
         herald_url=os.environ.get("KCAL_NOTIFY_HERALD_URL", "http://127.0.0.1:9098"),
         calendar_url=os.environ.get("KCAL_NOTIFY_CALENDAR_URL", "http://127.0.0.1:9094"),
         issuer=os.environ.get("KCAL_NOTIFY_ISSUER", "https://auth.kelliher.info"),
+        calendar_audience=os.environ.get("KCAL_NOTIFY_CALENDAR_AUDIENCE", ""),
+        herald_audience=os.environ.get("KCAL_NOTIFY_HERALD_AUDIENCE", ""),
+        calendar_host=os.environ.get("KCAL_NOTIFY_CALENDAR_HOST", ""),
+        herald_host=os.environ.get("KCAL_NOTIFY_HERALD_HOST", ""),
         recipient=os.environ.get("KCAL_NOTIFY_TO", "gluck"),
         user=os.environ.get("KCAL_NOTIFY_USER", "gluck"),
         tick_seconds=int(os.environ.get("KCAL_NOTIFY_TICK", "60")),
@@ -215,12 +223,9 @@ def status_report(db, lock):
 
 # ── herald ────────────────────────────────────────────────────────────────
 class Identity:
-    """The kcal-notify service identity: one token, two services."""
-
     def __init__(self, cfg):
         self.cfg = cfg
-        self._token = None
-        self._expires = 0.0
+        self._tokens = {}
         self._lock = threading.Lock()
 
     def _forwarded(self):
@@ -231,15 +236,19 @@ class Identity:
         return {"X-Forwarded-Proto": parts.scheme or "https",
                 "X-Forwarded-Host": parts.netloc}
 
-    def token(self, force=False):
+    def token(self, audience="", force=False):
         with self._lock:
-            if not force and self._token and time.time() < self._expires:
-                return self._token
+            held = self._tokens.get(audience)
+            if not force and held and time.time() < held[1]:
+                return held[0]
+            data = {"grant_type": "client_credentials"}
+            if audience:
+                data["audience"] = audience
             try:
                 res = requests.post(
                     self.cfg.token_url,
                     auth=(self.cfg.client_id, self.cfg.client_secret),
-                    data={"grant_type": "client_credentials"},
+                    data=data,
                     headers={"Accept": "application/json", **self._forwarded()},
                     timeout=15,
                 )
@@ -251,18 +260,20 @@ class Identity:
                 raise RuntimeError(f"token endpoint {res.status_code}: {res.text[:300]}")
             try:
                 body = res.json()
-                self._token = body["access_token"]
+                token = body["access_token"]
             except (ValueError, KeyError) as exc:
                 raise RuntimeError(f"token endpoint gave no access_token: {res.text[:200]}") from exc
-            self._expires = time.time() + int(body.get("expires_in", 600)) - 60
-            return self._token
+            self._tokens[audience] = (token, time.time() + int(body.get("expires_in", 600)) - 60)
+            return token
 
-    def _call(self, method, url, what, **kw):
+    def _call(self, method, url, what, audience="", host="", **kw):
+        routed = {"Host": host, "X-Forwarded-Proto": "https"} if host else {}
         for attempt in (1, 2):
             try:
                 res = requests.request(
                     method, url,
-                    headers={"Authorization": "Bearer " + self.token(force=attempt == 2)},
+                    headers={**routed,
+                             "Authorization": "Bearer " + self.token(audience, force=attempt == 2)},
                     timeout=30, **kw
                 )
             except (requests.ConnectionError, requests.Timeout) as exc:
@@ -280,13 +291,15 @@ class Identity:
         raise RuntimeError(f"{what} refused the token twice")
 
     def say(self, recipient, text):
-        return self._call("POST", self.cfg.herald_url.rstrip("/") + "/v1/say",
-                          "herald", json={"to": recipient, "text": text})
+        return self._call("POST", self.cfg.herald_url.rstrip("/") + "/v1/say", "herald",
+                          audience=self.cfg.herald_audience, host=self.cfg.herald_host,
+                          json={"to": recipient, "text": text})
 
     def events(self, window_from, window_to):
         """Read the window from gluck-calendar over its API, as a service client."""
         raw = self._call(
             "GET", self.cfg.calendar_url.rstrip("/") + "/events", "calendar",
+            audience=self.cfg.calendar_audience, host=self.cfg.calendar_host,
             params={"from": window_from.isoformat(), "to": window_to.isoformat()},
         )
         out = []

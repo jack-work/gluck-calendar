@@ -112,6 +112,31 @@
               default = "http://127.0.0.1:9098";
             };
 
+            calendarAudience = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Audience requested for the calendar token. Empty requests none.";
+            };
+
+            heraldAudience = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Audience requested for the herald token. Empty requests none.";
+            };
+
+            calendarHost = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Host header for calendar calls, when calendarUrl is Caddy rather than the backend.";
+            };
+
+            heraldHost = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Host header for herald calls, when heraldUrl is Caddy rather than the backend.";
+            };
+
+
             clientId = lib.mkOption {
               type = lib.types.str;
               default = "kcal-notify";
@@ -154,6 +179,10 @@
                 KCAL_NOTIFY_CLIENT_ID = cfg.clientId;
                 KCAL_NOTIFY_CALENDAR_URL = cfg.calendarUrl;
                 KCAL_NOTIFY_HERALD_URL = cfg.heraldUrl;
+                KCAL_NOTIFY_CALENDAR_AUDIENCE = cfg.calendarAudience;
+                KCAL_NOTIFY_HERALD_AUDIENCE = cfg.heraldAudience;
+                KCAL_NOTIFY_CALENDAR_HOST = cfg.calendarHost;
+                KCAL_NOTIFY_HERALD_HOST = cfg.heraldHost;
               };
               # Ordering is hygiene, not the fix: it governs startup, not a
               # dependency restarting under an already-scheduled job. The job

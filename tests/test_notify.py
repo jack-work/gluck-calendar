@@ -390,6 +390,82 @@ def _():
     srv.shutdown()
 
 
+@check("each service gets a token minted for its own audience, routed by Host through Caddy")
+def _():
+    import http.server
+    import json
+    import threading as th
+    from urllib.parse import parse_qs
+
+    minted, calls = [], []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _json(self, body):
+            raw = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+            if self.path.endswith("/token"):
+                aud = parse_qs(body).get("audience", [""])[0]
+                minted.append(aud)
+                return self._json({"access_token": f"tok-for-{aud}", "expires_in": 600})
+            calls.append((self.headers.get("Host"), self.headers.get("Authorization")))
+            return self._json({"ok": True})
+
+        def do_GET(self):
+            calls.append((self.headers.get("Host"), self.headers.get("Authorization")))
+            return self._json([])
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    cfg = notify.Config(client_id="kcal-notify", client_secret="s",
+                        token_url=base + "/api/oidc/token", herald_url=base, calendar_url=base,
+                        recipient="gluck", user="gluck",
+                        calendar_audience="https://cal.example.test",
+                        herald_audience="https://herald.example.test",
+                        calendar_host="cal.example.test", herald_host="herald.example.test")
+    ident = notify.Identity(cfg)
+    ident.events(at(0), at(23, 59))
+    ident.say("gluck", "x")
+    ident.events(at(0), at(23, 59))
+    ident.say("gluck", "y")
+    assert minted == ["https://cal.example.test", "https://herald.example.test"], minted
+    assert calls == [
+        ("cal.example.test", "Bearer tok-for-https://cal.example.test"),
+        ("herald.example.test", "Bearer tok-for-https://herald.example.test"),
+        ("cal.example.test", "Bearer tok-for-https://cal.example.test"),
+        ("herald.example.test", "Bearer tok-for-https://herald.example.test"),
+    ], calls
+    srv.shutdown()
+
+
+@check("with no audience configured the token request carries none, as before")
+def _():
+    from urllib.parse import parse_qs
+    seen = []
+
+    def handler(path, body=""):
+        if path.endswith("/token"):
+            seen.append(parse_qs(body))
+            return 200, {"access_token": "t", "expires_in": 600}
+        return 200, []
+    srv, base = _idp_with_body(handler)
+    cfg = notify.Config(client_id="c", client_secret="s", token_url=base + "/api/oidc/token",
+                        herald_url=base, calendar_url=base, recipient="gluck", user="gluck")
+    notify.Identity(cfg).events(at(0), at(23, 59))
+    assert seen and "audience" not in seen[0], seen
+    srv.shutdown()
+
+
 @check("events are read from the calendar API and mapped, with the window passed through")
 def _():
     import http.server
@@ -449,6 +525,35 @@ def _():
 
 
 # ── a dependency that is merely restarting must not fail the unit ──────────
+
+def _idp_with_body(handler_for):
+    import http.server
+    import json
+    import threading as th
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self, body=""):
+            code, payload = handler_for(self.path, body)
+            raw = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_POST(self):
+            self._answer(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
+
+        def do_GET(self):
+            self._answer()
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
 
 def _idp(handler_for):
     """A throwaway HTTP server standing in for Authelia and the calendar."""
