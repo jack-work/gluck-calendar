@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    gluck-service-lib.url = "github:jack-work/gluck-service-lib";
+    gluck-service-lib.url = "github:jack-work/gluck-service-lib/09c232a04f956c6c941898c43dade1a34f98e0e8";
     gluck-service-lib.inputs.nixpkgs.follows = "nixpkgs";
     zanni.url = "github:jack-work/zanni";
   };
@@ -136,7 +136,6 @@
               description = "Host header for herald calls, when heraldUrl is Caddy rather than the backend.";
             };
 
-
             clientId = lib.mkOption {
               type = lib.types.str;
               default = "kcal-notify";
@@ -202,12 +201,6 @@
           options.services.gluck-calendar = {
             enable = lib.mkEnableOption "gluck-calendar API (DuckDB events + per-item ACLs)";
 
-            port = lib.mkOption {
-              type = lib.types.port;
-              default = 9094;
-              description = "Loopback port for the calendar API";
-            };
-
             timeZone = lib.mkOption {
               type = lib.types.str;
               default = "America/New_York";
@@ -231,6 +224,16 @@
                 refused before routing.
               '';
             };
+
+            serviceAudience = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              example = "https://cal.kelliher.info";
+              description = ''
+                The aud a service client's token must carry, alone. Empty
+                refuses every service token.
+              '';
+            };
           };
 
           config = lib.mkIf cfg.enable (
@@ -238,7 +241,7 @@
               inherit config lib pkgs;
               name = "gluck-calendar";
               subdomain = "cal";
-              port = cfg.port;
+              socket = true;
               entrypoint = "${app}/gluck_calendar.py";
               pythonPackages = ps: with ps; [
                 flask
@@ -254,6 +257,7 @@
               environment = {
                 GLUCK_CALENDAR_DB = "/var/lib/gluck-calendar/calendar.duckdb";
                 GLUCK_CALENDAR_SERVICE_CLIENTS = builtins.toJSON cfg.serviceClients;
+                GLUCK_CALENDAR_SERVICE_AUDIENCE = cfg.serviceAudience;
                 GLUCK_CALENDAR_TZ = cfg.timeZone;
               };
               requireAuth = true;
@@ -277,6 +281,32 @@
         system: {
           ui = mkApp nixpkgs.legacyPackages.${system};
           notify = mkNotify nixpkgs.legacyPackages.${system};
+          socket =
+            let
+              pkgs = nixpkgs.legacyPackages.${system};
+            in
+            pkgs.runCommand "gluck-calendar-socket" {
+              SOCKET_CASES = builtins.toJSON [
+                {
+                  name = "calendar";
+                  entry = "${mkApp pkgs}/gluck_calendar.py";
+                  port = 29094;
+                  env = {
+                    GLUCK_CALENDAR_DB = "@TMP@/calendar.duckdb";
+                    GLUCK_CALENDAR_TZ = "America/New_York";
+                  };
+                  path = "/events";
+                  anonymous = 401;
+                  believed = 200;
+                }
+              ];
+            } ''
+              set -o pipefail
+              export SOCKET_ACTIVATE=${pkgs.systemd}/bin/systemd-socket-activate
+              ${pkgs.python3.withPackages (ps: with ps; [
+                flask waitress requests duckdb pyjwt cryptography python-dateutil pytz
+              ])}/bin/python -u ${./tests/test_socket.py} 2>&1 | tee $out
+            '';
         }
       );
     };

@@ -2,7 +2,8 @@
 
 Mirrors the gluck-todo design:
 
-- Loopback bind; Caddy sets Remote-User / Remote-Groups from Authelia's
+- Listens only on the socket systemd hands it, which only Caddy can reach;
+  Caddy sets Remote-User / Remote-Groups from Authelia's
   forward-auth response. Client-supplied Remote-* headers are stripped by
   Caddy before the request arrives.
 - If Authorization: Bearer <jwt> is present, validate against Authelia's
@@ -17,6 +18,8 @@ recurring events into concrete instances inside the requested window.
 
 import json
 import os
+import socket
+import sys
 import threading
 import time
 import uuid
@@ -74,6 +77,7 @@ OIDC_USERINFO_URL = os.environ.get(
 SERVICE_CLIENTS = json.loads(
     os.environ.get("GLUCK_CALENDAR_SERVICE_CLIENTS", "{}")
 )
+SERVICE_AUDIENCE = os.environ.get("GLUCK_CALENDAR_SERVICE_AUDIENCE", "")
 
 CREATE_GROUP = "calendar-create"
 PERMISSIONS = ("Read", "Write", "Delete", "Share")
@@ -170,6 +174,10 @@ def bearer_to_remote_headers():
     client_id = claims.get("client_id")
 
     if client_id in SERVICE_CLIENTS:
+        aud = claims.get("aud")
+        aud = [aud] if isinstance(aud, str) else list(aud or [])
+        if not SERVICE_AUDIENCE or aud != [SERVICE_AUDIENCE]:
+            return jsonify(error="service token was not minted for this calendar alone"), 401
         if request.method not in ("GET", "HEAD"):
             app.logger.info(
                 "refused %s %s: service client %s is read-only",
@@ -819,7 +827,19 @@ def share_event(event_id):
         return jsonify(event_id=event_id, username=grantee, permissions=permissions)
 
 
+def inherited_sockets():
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return []
+    return [socket.socket(fileno=3 + i) for i in range(int(os.environ.get("LISTEN_FDS", "0")))]
+
+
 if __name__ == "__main__":
     from waitress import serve
 
-    serve(app, host="127.0.0.1", port=PORT, threads=4)
+    sockets = inherited_sockets()
+    if sockets:
+        serve(app, sockets=sockets, threads=4)
+    elif os.environ.get("KWEB_LISTEN") == "socket":
+        sys.exit("no listening socket from systemd; refusing to fall back to TCP")
+    else:
+        serve(app, host="127.0.0.1", port=PORT, threads=4)

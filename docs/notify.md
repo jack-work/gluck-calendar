@@ -20,14 +20,20 @@ they have no start time to be an hour before.
 
 `kcal-notify` is its own systemd unit with its own state directory. It reads
 the calendar over HTTP and says to herald over HTTP, and shares nothing with
-either process.
+either process. It reaches both through the front door: Caddy on loopback,
+with the site's Host and a bearer, the same gate every other caller passes.
+Backends that trust identity headers listen only on sockets Caddy alone can
+reach, so there is no back door to use.
 
 ```
 kcal-notify.timer ──▶ kcal-notify.service
-                        │  GET  /events      gluck-calendar :9094  (read-only service client)
-                        │  POST /v1/say      gluck-herald   :9098  (role: say)
+                        │  GET  /events      Host cal.<base>     via Caddy  (read-only service client)
+                        │  POST /v1/say      Host herald.<base>  via Caddy  (role: say)
                         └─ ledger            /var/lib/kcal-notify/reminders.duckdb
 ```
+
+Caddy refusing, timing out or answering 502, 503 or 504 is transient: the tick
+is skipped and the unit exits 0. A 401 is re-minted once and then fails loudly.
 
 ## The storage fact that made it this shape
 

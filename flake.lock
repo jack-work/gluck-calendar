@@ -25,16 +25,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1788389253,
-        "narHash": "sha256-x5jgpCqhE0n7jKL13VLg5kiScSN5wxJScBTj8yVtN1o=",
+        "lastModified": 1791935417,
+        "narHash": "sha256-fzxCT4vKvjSBv1o4VWQnrRUkzU0Xp81jziTJUIZjcW8=",
         "owner": "jack-work",
         "repo": "gluck-service-lib",
-        "rev": "11019cfd1ca71f59f5034344f6005b55fe824c73",
+        "rev": "09c232a04f956c6c941898c43dade1a34f98e0e8",
         "type": "github"
       },
       "original": {
         "owner": "jack-work",
         "repo": "gluck-service-lib",
+        "rev": "09c232a04f956c6c941898c43dade1a34f98e0e8",
         "type": "github"
       }
     },

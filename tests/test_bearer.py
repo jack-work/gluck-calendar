@@ -27,6 +27,8 @@ from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+CAL = ["https://cal.test"]
 KID = "test-key"
 ISSUER = "https://auth.test"
 
@@ -86,6 +88,7 @@ os.environ.update(
     GLUCK_CALENDAR_OIDC_ISSUER=ISSUER,
     GLUCK_CALENDAR_OIDC_JWKS_URL=JWKS_URL,
     GLUCK_CALENDAR_SERVICE_CLIENTS=json.dumps({"kcal-notify": "gluck"}),
+    GLUCK_CALENDAR_SERVICE_AUDIENCE="https://cal.test",
     GLUCK_CALENDAR_OIDC_CLIENT_IDS="kcal",
     GLUCK_CALENDAR_TZ="America/New_York",
 )
@@ -103,28 +106,28 @@ def call(token, method="GET", path="/whoami"):
 
 @check("a service client with no sub is accepted: Authelia 4.39.12 omits it")
 def _():
-    r = call(mint(client_id="kcal-notify"))
+    r = call(mint(client_id="kcal-notify", aud=CAL))
     assert r.status_code == 200, (r.status_code, r.get_data(as_text=True))
     assert r.get_json()["user"] == "gluck", r.get_json()
 
 
 @check("a service client with a sub is accepted too: 4.39.22 includes it")
 def _():
-    r = call(mint(client_id="kcal-notify", sub="kcal-notify"))
+    r = call(mint(client_id="kcal-notify", aud=CAL, sub="kcal-notify"))
     assert r.status_code == 200, (r.status_code, r.get_data(as_text=True))
     assert r.get_json()["user"] == "gluck", r.get_json()
 
 
 @check("a service client is read-only, refused before routing")
 def _():
-    r = call(mint(client_id="kcal-notify"), method="POST", path="/events")
+    r = call(mint(client_id="kcal-notify", aud=CAL), method="POST", path="/events")
     assert r.status_code == 403, (r.status_code, r.get_data(as_text=True))
     assert "read-only" in r.get_json()["error"], r.get_json()
 
 
 @check("a service client reads events, which is the whole point")
 def _():
-    r = call(mint(client_id="kcal-notify"), path="/events")
+    r = call(mint(client_id="kcal-notify", aud=CAL), path="/events")
     assert r.status_code == 200, (r.status_code, r.get_data(as_text=True))
     assert isinstance(r.get_json(), list), r.get_json()
 
@@ -156,7 +159,7 @@ def _():
                             serialization.NoEncryption())
     bad = jwt.encode({"iss": "https://evil.test", "iat": now,
                       "exp": now + timedelta(minutes=10),
-                      "client_id": "kcal-notify"}, pem,
+                      "client_id": "kcal-notify", "aud": CAL}, pem,
                      algorithm="RS256", headers={"kid": KID})
     r = call(bad)
     assert r.status_code == 401, (r.status_code, r.get_data(as_text=True))
@@ -165,9 +168,65 @@ def _():
 @check("an expired token is refused")
 def _():
     now = datetime.now(timezone.utc)
-    r = call(mint(client_id="kcal-notify", iat=now - timedelta(hours=2),
+    r = call(mint(client_id="kcal-notify", aud=CAL, iat=now - timedelta(hours=2),
                   exp=now - timedelta(hours=1)))
     assert r.status_code == 401, (r.status_code, r.get_data(as_text=True))
+
+
+@check("a service token must name this calendar and nothing else: each wrong aud is refused")
+def _():
+    for aud in ([], ["https://herald.test"], ["https://cal.test", "https://herald.test"],
+                "https://herald.test", ["https://cal.test/"]):
+        r = call(mint(client_id="kcal-notify", aud=aud), path="/events")
+        assert r.status_code == 401, (aud, r.status_code, r.get_data(as_text=True))
+    r = call(mint(client_id="kcal-notify", aud="https://cal.test"), path="/events")
+    assert r.status_code == 200, ("string aud", r.status_code, r.get_data(as_text=True))
+
+
+@check("with no service audience configured, no service token is accepted")
+def _():
+    saved = gc.SERVICE_AUDIENCE
+    gc.SERVICE_AUDIENCE = ""
+    try:
+        r = call(mint(client_id="kcal-notify", aud=CAL), path="/events")
+        assert r.status_code == 401, (r.status_code, r.get_data(as_text=True))
+    finally:
+        gc.SERVICE_AUDIENCE = saved
+
+
+@check("a token signed by another key is refused")
+def _():
+    now = datetime.now(timezone.utc)
+    pem = OTHER_KEY.private_bytes(serialization.Encoding.PEM,
+                                  serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption())
+    bad = jwt.encode({"iss": ISSUER, "iat": now, "exp": now + timedelta(minutes=10),
+                      "client_id": "kcal-notify", "aud": CAL}, pem,
+                     algorithm="RS256", headers={"kid": KID})
+    r = call(bad, path="/events")
+    assert r.status_code == 401, (r.status_code, r.get_data(as_text=True))
+
+
+@check("an unsigned alg none token is refused")
+def _():
+    import base64
+
+    def b64(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    now = int(time.time())
+    bad = b64({"alg": "none", "typ": "JWT", "kid": KID}) + "." + b64(
+        {"iss": ISSUER, "iat": now, "exp": now + 600, "client_id": "kcal-notify",
+         "aud": CAL}) + "."
+    r = call(bad, path="/events")
+    assert r.status_code == 401, (r.status_code, r.get_data(as_text=True))
+
+
+@check("a valid token for another estate client is refused")
+def _():
+    for cid in ("keel-ci", "herald", "kfin", "gluck-todo-cli"):
+        r = call(mint(client_id=cid, sub="someone", aud=CAL), path="/events")
+        assert r.status_code == 401, (cid, r.status_code, r.get_data(as_text=True))
 
 
 def main():
