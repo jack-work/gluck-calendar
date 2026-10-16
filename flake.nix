@@ -59,6 +59,9 @@
             GLUCK_CALENDAR_MODULE=$out ${pkgs.python3.withPackages (ps: with ps; [
               flask waitress requests duckdb pyjwt cryptography python-dateutil pytz
             ])}/bin/python tests/test_bearer.py
+            GLUCK_CALENDAR_MODULE=$out ${pkgs.python3.withPackages (ps: with ps; [
+              flask waitress requests duckdb pyjwt cryptography python-dateutil pytz
+            ])}/bin/python tests/test_scheme.py
             runHook postInstall
           '';
         };

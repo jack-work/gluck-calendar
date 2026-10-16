@@ -99,11 +99,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1789140288,
-        "narHash": "sha256-MEeiRLYZjPgEsbKrwImVR1SmIofUYWwwmxHpL/fSUXw=",
+        "lastModified": 1792157452,
+        "narHash": "sha256-YRrAanQmvgrtpPHi+7GRtuzGF8gQiDA7DYhUEus5Uhs=",
         "owner": "jack-work",
         "repo": "zanni",
-        "rev": "f97238f2acf74ca93ee9be6e74874dbbe23df2cc",
+        "rev": "e1a5925a2b4f081b74a236a87c85f76d24160d2b",
         "type": "github"
       },
       "original": {

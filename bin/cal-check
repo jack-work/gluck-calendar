@@ -63,8 +63,11 @@ check('overflow is counted, not hidden', /\+\{\{ day\.overflow \}\} more/.test(h
 console.log('[palette] semantics derive from gesso');
 ['--cal-ground', '--cal-ink', '--cal-rule', '--cal-focus', '--cal-alarm'].forEach((v) =>
   check(v + ' is defined', new RegExp('\\' + v + ':').test(css)));
-check('the dark register remaps only the calendar namespace',
-  /html:root\s*\{[\s\S]{0,900}?--cal-ground:/.test(css));
+check('the ground follows the scheme through zanni',
+  /--cal-ground:\s*var\(--z-ground\)/.test(css) && /--cal-ink:\s*var\(--z-ink\)/.test(css));
+check('the page follows the OS', /<meta name="color-scheme" content="light dark">/.test(html));
+check('a pinned dark scheme gets the dark opacities',
+  /html:root\[data-scheme=dark\]\s*\{[^{}]*--cal-outside/.test(css));
 
 /* The keyboard. */
 console.log('[keys] navigation');

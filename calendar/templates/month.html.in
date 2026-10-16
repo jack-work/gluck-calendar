@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if scheme %} data-scheme="{{ scheme }}"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -7,17 +7,17 @@
 <title>{{ month_name }} {{ year }} · calendar</title>
 <style>
   :root {
-    --cal-ground: var(--paper);
-    --cal-ground-2: var(--paper-2);
-    --cal-ink: var(--ink);
-    --cal-muted: var(--muted);
-    --cal-rule: var(--rule);
-    --cal-rule-firm: rgba(43, 26, 21, 0.38);
+    --cal-ground: var(--z-ground);
+    --cal-ground-2: var(--z-ground-2);
+    --cal-ink: var(--z-ink);
+    --cal-muted: light-dark(var(--muted), var(--stage-muted));
+    --cal-rule: light-dark(var(--rule), rgba(240, 223, 200, 0.16));
+    --cal-rule-firm: light-dark(rgba(43, 26, 21, 0.38), rgba(240, 223, 200, 0.34));
     --cal-focus: var(--gold);
     --cal-focus-bright: var(--gold-bright);
-    --cal-alarm: var(--oxblood);
-    --cal-chip: rgba(43, 26, 21, 0.07);
-    --cal-chip-hover: rgba(43, 26, 21, 0.14);
+    --cal-alarm: light-dark(var(--oxblood), #c25b52);
+    --cal-chip: light-dark(rgba(43, 26, 21, 0.07), rgba(240, 223, 200, 0.09));
+    --cal-chip-hover: light-dark(rgba(43, 26, 21, 0.14), rgba(240, 223, 200, 0.17));
     --cal-outside: 0.42;
     --cal-past: 0.62;
 
@@ -29,25 +29,9 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    html:root {
-      --cal-ground: var(--stage);
-      --cal-ground-2: var(--stage-2);
-      --cal-ink: var(--stage-ink);
-      --cal-muted: var(--stage-muted);
-      --cal-rule: rgba(240, 223, 200, 0.16);
-      --cal-rule-firm: rgba(240, 223, 200, 0.34);
-      --cal-chip: rgba(240, 223, 200, 0.09);
-      --cal-chip-hover: rgba(240, 223, 200, 0.17);
-      --cal-alarm: #c25b52;
-      --cal-outside: 0.34;
-      --cal-past: 0.58;
-    }
-    html:root body {
-      background-color: var(--stage);
-      background-image: repeating-conic-gradient(var(--stage-2) 0% 25%, transparent 0% 50%);
-      color: var(--stage-ink);
-    }
+    html:root:not([data-scheme=light]) { --cal-outside: 0.34; --cal-past: 0.58; }
   }
+  html:root[data-scheme=dark] { --cal-outside: 0.34; --cal-past: 0.58; }
 
   * { box-sizing: border-box; }
 

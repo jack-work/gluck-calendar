@@ -510,6 +510,14 @@ def calendar_today():
     return redirect(f"/calendar/{today.year}/{today.month:02d}")
 
 
+SCHEMES = {"light", "dark"}
+
+
+def reader_scheme():
+    scheme = request.cookies.get("zanni-scheme")
+    return scheme if scheme in SCHEMES else None
+
+
 @app.get("/calendar/<int:year>/<int:month>")
 def calendar_month(year, month):
     user = caller()
@@ -612,8 +620,9 @@ def calendar_month(year, month):
     next_month = 1 if month == 12 else month + 1
     next_year = year + 1 if month == 12 else year
 
-    return render_template(
+    page = render_template(
         "month.html",
+        scheme=reader_scheme(),
         year=year,
         month=month,
         month_name=MONTH_NAMES[month - 1],
@@ -626,6 +635,7 @@ def calendar_month(year, month):
         prev_url=f"/calendar/{prev_year}/{prev_month:02d}",
         next_url=f"/calendar/{next_year}/{next_month:02d}",
     )
+    return page, {"Vary": "Cookie"}
 
 
 @app.get("/health")
